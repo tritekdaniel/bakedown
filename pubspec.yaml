@@ -1,0 +1,56 @@
+name: recipe_app
+description: "Recipe database and reader with AI transcoding"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  flutter_riverpod: 2.6.1
+  go_router: ^17.3.0
+  image_picker: ^1.2.2
+  dio: ^5.9.2
+  wakelock_plus: ^1.2.0
+  file_picker: ^8.0.0
+  shared_preferences: ^2.5.5
+  path_provider: ^2.1.6
+  yaml: ^3.1.3
+  intl: ^0.20.2
+  path: ^1.9.1
+  gpt_markdown: ^1.1.7
+  url_launcher: ^6.3.0
+  animations: ^2.0.0
+  permission_handler: ^12.0.0
+  smb_connect: ^0.0.9
+  nsd: ^5.0.1
+  audioplayers: ^6.1.0
+  speech_to_text: ^7.4.0
+  flutter_tts: ^4.1.0
+  sherpa_onnx: ^1.13.3
+  record: ^6.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
+
+flutter_launcher_icons:
+  android: true
+  windows:
+    generate: true
+  web:
+    generate: true
+  image_path: "assets/icon/app-icon.png"
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/prompts/recipe-system-prompt.md
+    - assets/audio/
+    - assets/sherpa/kws/
+    - assets/sherpa/vad/
