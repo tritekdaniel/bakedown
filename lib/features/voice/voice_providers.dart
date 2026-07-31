@@ -58,37 +58,37 @@ class SpeechToTextProvider {
     }
 
     final generation = ++_generation;
+    // Single completer: whichever path resolves first — finalResult, our own
+    // debounce, native status, or an error — wins, and every other path
+    // becomes a guaranteed no-op.
+    final resolution = Completer<void>();
     Timer? silenceTimer;
-    bool delivered = false;
     String lastText = '';
 
-    void deliver(String text) {
-      if (delivered || text.isEmpty || generation != _generation) return;
-      delivered = true;
+    void resolve(String text) {
+      if (resolution.isCompleted || generation != _generation) return;
+      resolution.complete();
       silenceTimer?.cancel();
-      onResult(text);
+      if (text.isNotEmpty) onResult(text);
     }
 
-    // Defer: calling back into the STT plugin (via deliver -> dispatch ->
-    // stt.stop()) from inside its own status callback can hang, since the
-    // plugin's stop() waits on a status transition that already just fired.
-    // A microtask lets this callback's stack fully unwind first.
     void handleStatus(String status) {
       if (status == 'listening') {
         onStatus(status);
         return;
       }
       scheduleMicrotask(() {
-        if (status == 'done' || status == 'notListening') {
-          deliver(lastText);
-        }
+        // Defer: never call back into the plugin from inside its own callback.
+        if (generation != _generation) return;
+        if (status == 'done' || status == 'notListening') resolve(lastText);
         onStatus(status);
       });
     }
 
     void handleError(String error) {
       scheduleMicrotask(() {
-        deliver(lastText);
+        if (generation != _generation) return;
+        resolve(lastText);
         onError?.call(error);
       });
     }
@@ -100,20 +100,19 @@ class SpeechToTextProvider {
       onResult: (result) {
         final text = result.recognizedWords;
         if (text.isNotEmpty) {
-          print('[STT] ${result.finalResult ? "final" : "partial"}: "$text"');
+          print('[STT] gen $generation ${result.finalResult ? "final" : "partial"}: "$text"');
         }
         if (result.finalResult) {
-          deliver(text);
+          resolve(text.isNotEmpty ? text : lastText);
           return;
         }
+        if (text.isEmpty) return;
         lastText = text;
         silenceTimer?.cancel();
-        if (text.isEmpty) return;
         silenceTimer = Timer(silenceDebounce, () {
-          if (generation != _generation) return;
-          print('[STT] debounce firing — no change for ${silenceDebounce.inMilliseconds}ms');
-          deliver(lastText);
-          _stt.stop();
+          if (generation != _generation || resolution.isCompleted) return;
+          print('[STT] gen $generation debounce firing');
+          resolve(lastText);
         });
       },
       listenOptions: SpeechListenOptions(
@@ -130,9 +129,26 @@ class SpeechToTextProvider {
 
   Future<void> stop() async {
     _generation++;
-    _statusHandler = null;
+
+    final released = Completer<void>();
+    _statusHandler = (status) {
+      if (!released.isCompleted &&
+          (status == 'done' || status == 'notListening')) {
+        released.complete();
+      }
+    };
     _errorHandler = null;
+
     await _stt.stop();
+
+    await released.future.timeout(
+      const Duration(milliseconds: 800),
+      onTimeout: () {
+        print('[STT] stop(): timed out waiting for done/notListening status');
+      },
+    );
+
+    _statusHandler = null;
   }
 
   void dispose() {

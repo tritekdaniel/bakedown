@@ -561,7 +561,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           ? Text('No models found',
                               style: theme.textTheme.bodySmall)
                           : DropdownButton<String>(
-                              value: settings.selectedModel,
+                              value: models.any((m) => m.id == settings.selectedModel)
+                                  ? settings.selectedModel
+                                  : null,
                               isExpanded: true,
                               hint: const Text('Select model'),
                               underline: const SizedBox(),
@@ -789,14 +791,11 @@ class _SmbDiscoverySectionState extends ConsumerState<_SmbDiscoverySection> {
   void initState() {
     super.initState();
     _discoveryNotifier = ref.read(smbDiscoveryProvider.notifier);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _discoveryNotifier?.startScan();
-    });
   }
 
   @override
   void dispose() {
+    _discoveryNotifier?.stopScan();
     _discoveryNotifier = null;
     super.dispose();
   }
@@ -829,13 +828,18 @@ class _SmbDiscoverySectionState extends ConsumerState<_SmbDiscoverySection> {
                       : theme.colorScheme.onSurfaceVariant,
                 ),
               ),
-              if (state.isScanning) ...[
-                const SizedBox(width: 8),
+              const Spacer(),
+              if (!state.isScanning)
+                TextButton.icon(
+                  onPressed: () => _discoveryNotifier?.startScan(),
+                  icon: const Icon(Icons.search, size: 16),
+                  label: const Text('Scan'),
+                )
+              else
                 SizedBox(
                   width: 14, height: 14,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
-              ],
             ],
           ),
         ),

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
+import 'package:recipe_app/app.dart';
 import 'package:recipe_app/features/recipes/presentation/providers/recipe_providers.dart';
 import 'package:recipe_app/features/settings/presentation/providers/settings_providers.dart';
 import 'package:recipe_app/features/timer/presentation/providers/timer_providers.dart';
@@ -43,6 +43,7 @@ class _VoiceDispatcherState extends ConsumerState<VoiceDispatcher> {
   }
 
   void _onCommandText(String text) {
+    print('[VOICE] onCommandText "$text" state=${ref.read(voiceStateProvider)}');
     final state = ref.read(voiceStateProvider);
     if (state != VoiceState.wakeDetected && state != VoiceState.commandListening) return;
 
@@ -61,7 +62,7 @@ class _VoiceDispatcherState extends ConsumerState<VoiceDispatcher> {
   }
 
   void _dispatchCommand(VoiceCommand command) {
-    final ctx = context;
+    final router = ref.read(goRouterProvider);
 
     switch (command) {
       case StopListening():
@@ -89,16 +90,16 @@ class _VoiceDispatcherState extends ConsumerState<VoiceDispatcher> {
       case ReadStepN(:final stepNumber):
         _readStep(stepNumber);
       case NavigateHome():
-        ctx.go('/');
+        router.go('/');
       case NavigateSettings():
-        ctx.go('/settings');
+        router.go('/settings');
       case NavigateTranscode():
-        ctx.go('/transcode');
+        router.go('/transcode');
       case NavigateToRecipe(:final folder, :final filename):
-        ctx.go('/folder/${Uri.encodeComponent(folder)}/recipe/${Uri.encodeComponent(filename)}');
+        router.go('/folder/${Uri.encodeComponent(folder)}/recipe/${Uri.encodeComponent(filename)}');
       case GoBack():
-        if (ctx.canPop()) {
-          ctx.pop();
+        if (router.canPop()) {
+          router.pop();
         } else {
           _showSnack('Nothing to go back from');
         }
@@ -147,7 +148,7 @@ class _VoiceDispatcherState extends ConsumerState<VoiceDispatcher> {
     ref.read(voiceStateProvider.notifier).state = VoiceState.wakeListening;
 
     await stt.stop().timeout(
-      const Duration(milliseconds: 500),
+      const Duration(milliseconds: 900),
       onTimeout: () => print('[VOICE] stt.stop() timed out in _finishCommandCycle'),
     );
     await engine.resetToWakeListening();
@@ -294,8 +295,9 @@ class _VoiceDispatcherState extends ConsumerState<VoiceDispatcher> {
       if (prev == next || !_engineInitialized) return;
       final engine = ref.read(sherpaEngineProvider);
       if (next) {
-        engine.start();
+        engine.start().then((_) => engine.playVoiceActivated());
       } else {
+        engine.playVoiceDeactivated();
         engine.stop();
       }
     });

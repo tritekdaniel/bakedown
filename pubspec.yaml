@@ -1,7 +1,7 @@
 name: recipe_app
 description: "Recipe database and reader with AI transcoding"
 publish_to: 'none'
-version: 1.0.0+1
+version: 0.0.1+1
 
 environment:
   sdk: ^3.11.0

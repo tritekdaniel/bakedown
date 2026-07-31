@@ -18,9 +18,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
     routes: [
       StatefulShellRoute.indexedStack(
         builder: (context, state, navigationShell) {
-          return VoiceDispatcher(
-            child: AdaptiveScaffold(navigationShell: navigationShell),
-          );
+          return AdaptiveScaffold(navigationShell: navigationShell);
         },
         branches: [
           StatefulShellBranch(
@@ -137,6 +135,7 @@ class RecipeApp extends ConsumerWidget {
       darkTheme: AppTheme.darkTheme,
       themeMode: settings.darkMode ? ThemeMode.dark : ThemeMode.light,
       routerConfig: router,
+      builder: (context, child) => VoiceDispatcher(child: child!),
       debugShowCheckedModeBanner: false,
     );
   }

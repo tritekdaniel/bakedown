@@ -107,11 +107,26 @@ class TimerNotifier extends StateNotifier<List<TimerModel>> {
     }).toList();
   }
 
+  static final _duckAudioContext = AudioContext(
+    android: AudioContextAndroid(
+      isSpeakerphoneOn: false,
+      stayAwake: false,
+      contentType: AndroidContentType.sonification,
+      usageType: AndroidUsageType.alarm,
+      audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+    ),
+    iOS: AudioContextIOS(
+      category: AVAudioSessionCategory.ambient,
+      options: {AVAudioSessionOptions.mixWithOthers},
+    ),
+  );
+
   Future<void> _playAlarm(String id, String soundFile) async {
     try {
       _alarmStopTimers[id]?.cancel();
       final player = AudioPlayer();
       _players[id] = player;
+      await player.setAudioContext(_duckAudioContext);
       player.setReleaseMode(ReleaseMode.loop);
       await player.play(AssetSource(soundFile));
       _alarmStopTimers[id] = Timer(const Duration(seconds: 60), () {
@@ -123,6 +138,7 @@ class TimerNotifier extends StateNotifier<List<TimerModel>> {
   void _playCloseSound() {
     try {
       final player = AudioPlayer();
+      player.setAudioContext(_duckAudioContext);
       player.onPlayerComplete.first.then((_) => player.dispose());
       player.play(AssetSource('audio/close-timer.mp3'));
     } catch (_) {}

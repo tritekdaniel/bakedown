@@ -7,10 +7,12 @@ import android.provider.DocumentsContract
 import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "recipe_app/saf"
+    private var wakeWordAudioSource: WakeWordAudioSource? = null
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -63,6 +65,14 @@ class MainActivity : FlutterActivity() {
                 result.error("SAF_ERROR", e.message, null)
             }
         }
+
+        wakeWordAudioSource = WakeWordAudioSource(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
+    }
+
+    override fun onDestroy() {
+        wakeWordAudioSource?.dispose()
+        wakeWordAudioSource = null
+        super.onDestroy()
     }
 
     private fun takePersistablePermission(uriStr: String) {

@@ -7,6 +7,7 @@ import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 import 'audio_utils.dart';
+import 'native_audio_source.dart';
 
 class SherpaEngine {
   SherpaEngine({
@@ -39,9 +40,30 @@ class SherpaEngine {
   sherpa.KeywordSpotter? _kws;
   sherpa.OnlineStream? _kwsStream;
 
+  // --- Native audio path (primary) ---
+  NativeAudioSource? _nativeSource;
+  StreamSubscription<Uint8List>? _nativeDataSub;
+  StreamSubscription<AudioSourceEvent>? _nativeEventSub;
+  bool _useNativeAudio = true;
+
+  // --- record-package audio path (fallback only) ---
   AudioRecorder? _recorder;
-  StreamSubscription<Uint8List>? _audioSubscription;
+  StreamSubscription<Uint8List>? _recorderSubscription;
   int _recorderGeneration = 0;
+
+  static final _duckAudioContext = AudioContext(
+    android: AudioContextAndroid(
+      isSpeakerphoneOn: false,
+      stayAwake: false,
+      contentType: AndroidContentType.sonification,
+      usageType: AndroidUsageType.alarm,
+      audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+    ),
+    iOS: AudioContextIOS(
+      category: AVAudioSessionCategory.ambient,
+      options: {AVAudioSessionOptions.mixWithOthers},
+    ),
+  );
 
   String? _kwsDir;
 
@@ -55,9 +77,9 @@ class SherpaEngine {
     if (_running) return;
     if (!_initialized) await init();
     _initKws();
-    await _startAudioStream();
+    await _startAudio();
     _running = true;
-    print('[VOICE] engine started, listening for wake word');
+    print('[VOICE] engine started, listening for wake word (native=$_useNativeAudio)');
   }
 
   void _initKws() {
@@ -109,15 +131,61 @@ class SherpaEngine {
     }
   }
 
-  Future<void> _startAudioStream() async {
-    _recorder = AudioRecorder();
-    _recorderGeneration++;
-    final hasPerm = await _recorder!.hasPermission();
-    if (!hasPerm) {
-      print('[VOICE] mic permission denied');
+  Future<void> _startAudio() async {
+    await _stopAudio();
+
+    _nativeSource = NativeAudioSource();
+    _wireNativeEvents(_nativeSource!);
+
+    final nativeStarted = await _nativeSource!.start();
+    if (nativeStarted) {
+      _useNativeAudio = true;
+      _nativeDataSub = _nativeSource!.onData.listen(_onAudioData);
+      print('[VOICE] native audio source started');
       return;
     }
-    print('[VOICE] mic permission granted, starting stream');
+
+    print('[VOICE] native audio source failed to start -- falling back to record package');
+    _nativeSource?.dispose();
+    _nativeSource = null;
+    _useNativeAudio = false;
+    await _startRecorderFallback();
+  }
+
+  void _wireNativeEvents(NativeAudioSource source) {
+    _nativeEventSub?.cancel();
+    _nativeEventSub = source.onEvent.listen((event) {
+      switch (event) {
+        case AudioFocusLost(:final reason):
+          print('[VOICE] audio focus lost: $reason');
+        case AudioFocusGained():
+          print('[VOICE] audio focus regained');
+        case AudioSourceError(:final message):
+          print('[VOICE] native audio error: $message -- falling back to record package');
+          _handleNativeFailureMidStream();
+      }
+    });
+  }
+
+  Future<void> _handleNativeFailureMidStream() async {
+    if (!_useNativeAudio) return;
+    _useNativeAudio = false;
+    await _nativeDataSub?.cancel();
+    _nativeDataSub = null;
+    _nativeSource?.dispose();
+    _nativeSource = null;
+    await _startRecorderFallback();
+  }
+
+  Future<void> _startRecorderFallback() async {
+    _recorder = AudioRecorder();
+    _recorderGeneration++;
+    final myGen = _recorderGeneration;
+    final hasPerm = await _recorder!.hasPermission();
+    if (!hasPerm) {
+      print('[VOICE] mic permission denied (fallback path)');
+      return;
+    }
     final stream = await _recorder!.startStream(
       const RecordConfig(
         sampleRate: 16000,
@@ -125,19 +193,30 @@ class SherpaEngine {
         encoder: AudioEncoder.pcm16bits,
       ),
     );
-    print('[VOICE] audio stream started');
-    _audioSubscription = stream.listen(_onAudioData);
+    print('[VOICE] fallback (record package) audio stream started');
+    _recorderSubscription = stream.listen((data) {
+      if (myGen != _recorderGeneration) return;
+      _onAudioData(data);
+    });
   }
 
-  Future<void> _stopAudioStream() async {
-    final gen = _recorderGeneration;
-    await _audioSubscription?.cancel();
-    _audioSubscription = null;
-    if (gen != _recorderGeneration) return;
+  Future<void> _stopAudio() async {
+    await _nativeDataSub?.cancel();
+    _nativeDataSub = null;
+    await _nativeEventSub?.cancel();
+    _nativeEventSub = null;
+    if (_nativeSource != null) {
+      await _nativeSource!.stop();
+      _nativeSource!.dispose();
+      _nativeSource = null;
+    }
+
+    _recorderGeneration++;
+    await _recorderSubscription?.cancel();
+    _recorderSubscription = null;
     await _recorder?.stop();
     _recorder?.dispose();
     _recorder = null;
-    print('[VOICE] audio stream stopped');
   }
 
   void _onAudioData(Uint8List data) {
@@ -157,36 +236,53 @@ class SherpaEngine {
   }
 
   Future<void> stopMic() async {
-    await _stopAudioStream();
+    await _stopAudio();
   }
 
   Future<void> resetToWakeListening() async {
     _wakeWordFired = false;
-    await _startAudioStream();
+    await _startAudio();
     print('[VOICE] reset to wake listening');
   }
 
-  void playWakeSound() {
+  Future<void> playWakeSound() async {
     final p = AudioPlayer();
-    p.play(AssetSource('audio/wake-word-detected.mp3'));
+    await p.setAudioContext(_duckAudioContext);
+    await p.play(AssetSource('audio/wake-word-detected.mp3'));
     p.onPlayerComplete.first.then((_) => p.dispose());
   }
 
-  void playCommandFeedback() {
+  Future<void> playCommandFeedback() async {
     final p = AudioPlayer();
-    p.play(AssetSource('audio/following-command.mp3'));
+    await p.setAudioContext(_duckAudioContext);
+    await p.play(AssetSource('audio/following-command.mp3'));
     p.onPlayerComplete.first.then((_) => p.dispose());
   }
 
-  void playUnknownFeedback() {
+  Future<void> playUnknownFeedback() async {
     final p = AudioPlayer();
-    p.play(AssetSource('audio/unknown-command.mp3'));
+    await p.setAudioContext(_duckAudioContext);
+    await p.play(AssetSource('audio/unknown-command.mp3'));
+    p.onPlayerComplete.first.then((_) => p.dispose());
+  }
+
+  Future<void> playVoiceActivated() async {
+    final p = AudioPlayer();
+    await p.setAudioContext(_duckAudioContext);
+    await p.play(AssetSource('audio/voice-activated.mp3'));
+    p.onPlayerComplete.first.then((_) => p.dispose());
+  }
+
+  Future<void> playVoiceDeactivated() async {
+    final p = AudioPlayer();
+    await p.setAudioContext(_duckAudioContext);
+    await p.play(AssetSource('audio/voice-deactivated.mp3'));
     p.onPlayerComplete.first.then((_) => p.dispose());
   }
 
   Future<void> stop() async {
     _running = false;
-    await _stopAudioStream();
+    await _stopAudio();
     _kws?.free();
     _kws = null;
     _kwsStream?.free();
