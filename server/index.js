@@ -170,6 +170,39 @@ app.put('/api/file/:folder/:filename', (req, res) => {
   }
 });
 
+// Binary image upload — web HttpRepo writeBytes hits this (raw bytes, e.g. image/jpeg)
+app.put('/files/:folder/:filename', express.raw({ type: '*/*', limit: '20mb' }), (req, res) => {
+  const p = safePath(req.params.folder, req.params.filename);
+  if (!p) return sendJson(res, { error: 'invalid path' }, 400);
+  try {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const data = req.body;
+    if (Buffer.isBuffer(data)) {
+      fs.writeFileSync(p, data);
+    } else if (typeof data === 'string') {
+      // fallback: base64 or plain text sent via this route
+      try {
+        const buf = Buffer.from(data, 'base64');
+        // heuristic: if base64 round-trip length matches, treat as base64
+        if (buf.toString('base64') === data.replace(/\s/g, '')) {
+          fs.writeFileSync(p, buf);
+        } else {
+          fs.writeFileSync(p, data, 'utf-8');
+        }
+      } catch {
+        fs.writeFileSync(p, String(data), 'utf-8');
+      }
+    } else if (data) {
+      fs.writeFileSync(p, Buffer.from(data));
+    } else {
+      fs.writeFileSync(p, Buffer.alloc(0));
+    }
+    sendJson(res, { ok: true });
+  } catch (e) {
+    sendJson(res, { error: String(e) }, 500);
+  }
+});
+
 app.post('/api/file', (req, res) => {
   const { folder = '', filename = '', content = '' } = req.body || {};
   const p = safePath(String(folder), String(filename));

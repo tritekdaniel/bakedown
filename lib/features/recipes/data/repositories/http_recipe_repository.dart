@@ -211,6 +211,27 @@ class HttpRecipeRepository implements RecipeRepository {
     }
   }
 
+  Future<bool> writeBytes(String folder, String filename, Uint8List bytes, {String contentType = 'application/octet-stream'}) async {
+    try {
+      final resp = await _dio.put(
+        '/files/${Uri.encodeComponent(folder)}/${Uri.encodeComponent(filename)}',
+        data: bytes,
+        options: Options(contentType: contentType, headers: {'Content-Type': contentType}),
+      );
+      if (resp.statusCode == 200 || resp.statusCode == 201) return true;
+      final b64 = base64Encode(bytes);
+      final alt = await _dio.put(
+        '/api/file/${Uri.encodeComponent(folder)}/${Uri.encodeComponent(filename)}',
+        data: b64,
+        options: Options(contentType: 'text/plain'),
+      );
+      return alt.statusCode == 200 || alt.statusCode == 201;
+    } catch (e) {
+      debugPrint('[HTTP_REPO] writeBytes $folder/$filename failed: $e');
+      return false;
+    }
+  }
+
   @override
   Future<String> imagePathFor(String folder, String fileName) async {
     // Return direct HTTP URL for <img> on web, or cached path fallback

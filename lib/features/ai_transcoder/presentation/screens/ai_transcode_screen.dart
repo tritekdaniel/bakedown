@@ -13,6 +13,7 @@ import '../../../../core/theme/app_spacing.dart';
 import '../../../../core/theme/app_radius.dart';
 import '../../../settings/presentation/providers/settings_providers.dart';
 import '../../../recipes/presentation/providers/recipe_providers.dart';
+import '../../../recipes/data/repositories/http_recipe_repository.dart';
 import '../../data/repositories/lm_studio_repository.dart';
 
 class AITranscodeScreen extends ConsumerStatefulWidget {
@@ -398,37 +399,61 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
 
     final imagePaths = <String>[];
     final slug = name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-').replaceAll(RegExp(r'^-|-$'), '');
-    if (_attachImages && _images.isNotEmpty && !kIsWeb) {
+    if (_attachImages && _images.isNotEmpty) {
       try {
         final rp = repo.rootPath;
         final isHttp = rp != null && (rp.startsWith('http://') || rp.startsWith('https://'));
-        if (rp != null && !isHttp) {
-          final folderDir = Directory(p.join(rp, folder));
-          if (!folderDir.existsSync()) {
-            folderDir.createSync(recursive: true);
-          }
-          for (var i = 0; i < _images.length; i++) {
-            final sourceFile = _images[i];
-            final destPath = p.join(folderDir.path, '$slug-${i + 1}.jpg');
-            try {
+        String extFor(String n) {
+          final e = n.split('.').last.toLowerCase();
+          if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif', 'avif'].contains(e)) return e == 'jpeg' ? 'jpg' : e;
+          return 'jpg';
+        }
+
+        String mimeFor(String n) {
+          final e = extFor(n);
+          if (e == 'png') return 'image/png';
+          if (e == 'webp') return 'image/webp';
+          if (e == 'gif') return 'image/gif';
+          if (e == 'bmp') return 'image/bmp';
+          return 'image/jpeg';
+        }
+
+        for (var i = 0; i < _images.length; i++) {
+          final sourceFile = _images[i];
+          final srcName = sourceFile.name.isNotEmpty ? sourceFile.name : 'image.jpg';
+          final ext = extFor(srcName);
+          final destName = '$slug-${i + 1}.$ext';
+          try {
+            final bytes = await sourceFile.readAsBytes();
+            if (bytes.isEmpty) continue;
+            if (isHttp && repo is HttpRecipeRepository) {
+              final ok = await (repo as HttpRecipeRepository).writeBytes(folder, destName, bytes, contentType: mimeFor(srcName));
+              if (ok) imagePaths.add(destName);
+            } else if (!isHttp && rp != null) {
+              final folderDir = Directory(p.join(rp, folder));
+              if (!folderDir.existsSync()) folderDir.createSync(recursive: true);
+              final destPath = p.join(folderDir.path, destName);
               if (sourceFile.path.startsWith('content://')) {
                 await XFile(sourceFile.path).saveTo(destPath);
               } else {
-                final bytes = await sourceFile.readAsBytes();
                 await File(destPath).writeAsBytes(bytes);
               }
-              imagePaths.add('$slug-${i + 1}.jpg');
-            } catch (e) {
+              imagePaths.add(destName);
+            }
+          } catch (e) {
+            if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Failed to copy image $i: $e')),
+                SnackBar(content: Text('Failed to copy image ${i + 1}: $e')),
               );
             }
           }
         }
       } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to prepare image directory: $e')),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to prepare images: $e')),
+          );
+        }
       }
     }
 
