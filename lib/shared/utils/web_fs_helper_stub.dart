@@ -1,6 +1,9 @@
 import 'dart:typed_data';
 
 bool get isFileSystemAccessSupported => false;
+bool get isSecureContext => true;
+String get currentOrigin => '';
+String get localhostAlternative => 'http://localhost:2211/';
 
 class WebFsHelper {
   static bool get hasHandle => false;

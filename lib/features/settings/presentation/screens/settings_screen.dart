@@ -201,15 +201,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _pickRecipeFolder() async {
     if (kIsWeb) {
-      if (isFileSystemAccessSupported) {
-        final handle = await WebFsHelper.pickDirectory();
-        if (handle == null) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No folder selected or browser denied access')),
-          );
-          return;
-        }
+      if (!isSecureContext) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Blocked: $currentOrigin is not secure. Use ${localhostAlternative} on this Ubuntu machine or serve with HTTPS.')),
+        );
+        return;
+      }
+      final handle = await WebFsHelper.pickDirectory();
+      if (handle != null) {
+        ref.read(webUseBrowserStorageProvider.notifier).state = false;
         ref.read(webFsHandleRevisionProvider.notifier).state++;
         ref.invalidate(recipeRepositoryProvider);
         ref.invalidate(foldersProvider);
@@ -221,6 +222,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         }
         return;
       }
+      if (isFileSystemAccessSupported) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No folder selected or browser denied access')),
+        );
+        return;
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('File System Access not available — using browser storage. Try Chrome/Edge on localhost.')),
+      );
       _showManualPathDialog();
       return;
     }

@@ -13,10 +13,12 @@ import 'package:recipe_app/shared/utils/android_saf_helper.dart';
 final smbConnectRequestProvider = StateProvider<int>((ref) => 0);
 
 final webFsHandleRevisionProvider = StateProvider<int>((ref) => 0);
+final webUseBrowserStorageProvider = StateProvider<bool>((ref) => false);
 
 final recipeRepositoryProvider = FutureProvider<RecipeRepository?>((ref) async {
   ref.watch(smbConnectRequestProvider);
   ref.watch(webFsHandleRevisionProvider);
+  ref.watch(webUseBrowserStorageProvider);
   final httpBridgeEnabled = ref.watch(settingsProvider.select((s) => s.httpBridgeEnabled));
   final httpBridgeUrl = ref.watch(settingsProvider.select((s) => s.httpBridgeUrl));
   final recipeDirectory = ref.watch(settingsProvider.select((s) => s.recipeDirectory));
@@ -26,6 +28,8 @@ final recipeRepositoryProvider = FutureProvider<RecipeRepository?>((ref) async {
   }
 
   if (kIsWeb) {
+    final useBrowserStorage = ref.watch(webUseBrowserStorageProvider);
+    if (useBrowserStorage) return WebRecipeRepository();
     if (WebFsHelper.hasHandle) {
       return WebFsRecipeRepository();
     }

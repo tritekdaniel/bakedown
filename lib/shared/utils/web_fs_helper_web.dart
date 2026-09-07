@@ -6,9 +6,40 @@ import 'package:flutter/foundation.dart';
 // ignore: avoid_web_libraries_in_flutter
 import 'package:web/web.dart' as web;
 
+bool get isSecureContext {
+  if (!kIsWeb) return true;
+  try {
+    final v = (web.window as JSObject).getProperty('isSecureContext'.toJS) as JSBoolean?;
+    return v?.toDart ?? true;
+  } catch (_) {
+    return true;
+  }
+}
+
+String get currentOrigin {
+  if (!kIsWeb) return '';
+  try {
+    return web.window.location.origin;
+  } catch (_) {
+    return '';
+  }
+}
+
+String get localhostAlternative {
+  if (!kIsWeb) return '';
+  try {
+    final loc = web.window.location;
+    final port = loc.port.isEmpty ? '' : ':${loc.port}';
+    return '${loc.protocol}//localhost$port/';
+  } catch (_) {
+    return 'http://localhost:2211/';
+  }
+}
+
 bool get isFileSystemAccessSupported {
   if (!kIsWeb) return false;
   try {
+    if (!isSecureContext) return false;
     final prop = (web.window as JSObject).getProperty('showDirectoryPicker'.toJS);
     return prop != null;
   } catch (_) {
@@ -30,10 +61,11 @@ class WebFsHelper {
   }
 
   static Future<JSAny?> pickDirectory() async {
-    if (!isFileSystemAccessSupported) return null;
     try {
       final win = web.window as JSObject;
-      final promise = win.callMethod<JSPromise<JSAny?>>('showDirectoryPicker'.toJS, jsify({'mode': 'readwrite'}) as JSAny);
+      // Call without options for maximum compatibility — defaults to readwrite
+      // Must be called directly in user gesture, no await before it
+      final promise = win.callMethod<JSPromise<JSAny?>>('showDirectoryPicker'.toJS);
       final handle = await promise.toDart as JSAny?;
       if (handle == null) return null;
       try {

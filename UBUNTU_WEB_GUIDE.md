@@ -23,9 +23,21 @@ flutter run -d chrome --web-port 54545 --no-wasm-dry-run
 ```
 
 * Must be **Chrome or Edge** (Firefox/Safari don't support `showDirectoryPicker`).
-* Must be `http://localhost:*` (secure context). `flutter run -d chrome` already is.
-* First screen → **Pick Folder on Disk** → select `~/Recipes` or `//server/share` (see §4 for NAS). Grant **Read & Write**.
-* Files are real `.md` on disk at the folder you picked. `http://localhost:<port>` shows `rootName` (e.g. `Recipes`).
+* Must be `http://localhost:*` or `https://` (**secure context**). `flutter run -d chrome` already is `http://localhost:xxx` → picker works.
+* **You are on `http://192.168.0.218:2211` (npx) → NOT secure → picker blocked.** The app now shows `Secure context required` with `http://localhost:2211/` fix. On this Ubuntu machine, open **`http://localhost:2211/`** instead of `http://192.168.0.218:2211` — same server, but secure.
+* First screen → **Pick Folder on Disk — OS File Browser** → OS dialog → select `~/Recipes` or `//server/share` (see §4 for NAS). Grant **Read & Write**.
+* Files are real `.md` on disk at the folder you picked.
+
+**npx production:**
+```bash
+flutter build web --release --no-wasm-dry-run
+npx serve build/web -l 2211   # serves http://localhost:2211 + http://192.168.0.218:2211
+# → use http://localhost:2211 on this PC for picker
+# For LAN https (so other devices can pick):
+sudo apt install mkcert && mkcert -install && mkcert 192.168.0.218 localhost 127.0.0.1
+npx http-server build/web -p 2211 --ssl --cert cert.pem --key key.pem
+# → https://192.168.0.218:2211 now secure → picker works from phone
+```
 
 **Where is "root"?**
 
@@ -97,8 +109,9 @@ Discovery (`lib/features/settings/presentation/providers/settings_providers.dart
 ### 7. Troubleshooting
 
 * `SyntaxError: Identifier 'PromiseCompleter' has already been declared` → fixed via `wakelock_plus-1.5.2/lib/assets/no_sleep.js:3` guard + `settings_providers.dart:24` `if(kIsWeb) return` . If old service worker cached, **Ctrl+Shift+R** or `DevTools > Application > Clear storage`.
-* `FileSystemAccess not supported` → use Chrome ≥86 on `localhost` or deploy to `https://`.
-* Empty after reload on web → handle not persisted yet — re-pick folder.
+* `FileSystemAccess not supported` / `Secure context required` on `http://192.168.0.218:2211` → **expected** — `http://192.168.x.x` is not secure, `showDirectoryPicker` is blocked. Use `http://localhost:2211` on this PC, or serve with `https://` (mkcert above). Check `DevTools > Console` for `[WEB_FS]` logs.
+* `Set folder just makes a folder` (text field) → you are in **Browser Storage** fallback (virtual `localStorage`), not OS picker. Click **Pick Folder on Disk — OS File Browser** on the `Secure context required` screen, or switch via `webUseBrowserStorageProvider`.
+* Empty after reload on web → handle is in-memory only — re-pick folder (IndexedDB persistence coming).
 
 ### 8. Next steps
 

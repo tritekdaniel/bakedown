@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../../../core/constants/app_constants.dart';
 import '../../../../shared/utils/android_saf_helper.dart';
 import '../../../../shared/utils/web_fs_helper.dart';
+import '../../../../shared/utils/web_legacy_picker.dart';
 import 'package:recipe_app/shared/widgets/file_browser.dart';
 import 'package:recipe_app/features/settings/domain/models/app_settings.dart';
 import 'package:recipe_app/features/settings/presentation/providers/settings_providers.dart';
@@ -54,15 +55,17 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
   }
   Future<void> _pickDirectory() async {
     if (kIsWeb) {
-      if (isFileSystemAccessSupported) {
-        final handle = await WebFsHelper.pickDirectory();
-        if (handle == null) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No folder selected or browser denied access')),
-          );
-          return;
-        }
+      if (!isSecureContext) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Blocked: $currentOrigin is not secure. Use ${localhostAlternative} on this Ubuntu machine or serve with HTTPS (mkcert).')),
+        );
+        return;
+      }
+      // Always try OS picker first — isFileSystemAccessSupported can be wrong on some Linux Chrome builds
+      final handle = await WebFsHelper.pickDirectory();
+      if (handle != null) {
+        ref.read(webUseBrowserStorageProvider.notifier).state = false;
         ref.read(webFsHandleRevisionProvider.notifier).state++;
         ref.invalidate(recipeRepositoryProvider);
         ref.invalidate(foldersProvider);
@@ -74,6 +77,18 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
         }
         return;
       }
+      if (isFileSystemAccessSupported) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No folder selected or browser denied access')),
+        );
+        return;
+      }
+      // Fallback for browsers without File System Access
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('File System Access not available — using browser storage. Try Chrome/Edge on localhost.')),
+      );
       _showManualPathDialog();
       return;
     }
@@ -199,7 +214,91 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
       );
     }
 
-    if (kIsWeb && isFileSystemAccessSupported && !WebFsHelper.hasHandle) {
+    if (kIsWeb && !WebFsHelper.hasHandle) {
+      final supported = isFileSystemAccessSupported;
+      final secure = isSecureContext;
+      final origin = currentOrigin;
+      if (!secure) {
+        return Scaffold(
+          appBar: AppBar(title: const Text(AppConstants.appTitle)),
+          body: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.security, size: 80, color: theme.colorScheme.error),
+                  const SizedBox(height: 16),
+                  Text('Secure context required', style: theme.textTheme.headlineSmall),
+                  const SizedBox(height: 8),
+                  Text(
+                    'You are on $origin\nFile System Access needs https:// or http://localhost\n\nhttp://192.168.0.218:2211 is not secure, so the OS picker is blocked.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(color: theme.colorScheme.errorContainer, borderRadius: BorderRadius.circular(8)),
+                    child: Column(children: [
+                      Text('Fix on this Ubuntu machine:', style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w600, color: theme.colorScheme.onErrorContainer)),
+                      const SizedBox(height: 4),
+                      SelectableText('http://localhost:2211/', style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onErrorContainer, fontFamily: 'monospace')),
+                      const SizedBox(height: 4),
+                      Text('Open that on this PC. For LAN https:\nmkcert 192.168.0.218 localhost && npx http-server build/web -p 2211 --ssl --cert cert.pem --key key.pem',
+                          textAlign: TextAlign.center, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onErrorContainer)),
+                    ]),
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton.icon(
+                    onPressed: () async {
+                      final count = await WebLegacyPicker.pickAndImportFolder();
+                      if (count > 0) {
+                        ref.read(webUseBrowserStorageProvider.notifier).state = true;
+                        ref.invalidate(recipeRepositoryProvider);
+                        ref.invalidate(foldersProvider);
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Imported $count recipes into browser storage')),
+                          );
+                        }
+                      } else if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('No .md files found or cancelled')),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.folder_open),
+                    label: const Text('Import Folder (legacy, http) — Read Only'),
+                  ),
+                  const SizedBox(height: 8),
+                  FilledButton.tonalIcon(
+                    onPressed: () => context.push('/settings'),
+                    icon: const Icon(Icons.http),
+                    label: const Text('Configure HTTP Bridge (full R/W over http)'),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      ref.read(webUseBrowserStorageProvider.notifier).state = true;
+                      ref.invalidate(recipeRepositoryProvider);
+                      ref.invalidate(foldersProvider);
+                    },
+                    icon: const Icon(Icons.storage),
+                    label: const Text('Use Browser Storage (virtual)'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton.icon(
+                    onPressed: _pickDirectory,
+                    icon: const Icon(Icons.warning_amber),
+                    label: const Text('Try OS Picker Anyway (will fail)'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
       return Scaffold(
         appBar: AppBar(title: const Text(AppConstants.appTitle)),
         body: Center(
@@ -208,11 +307,13 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
             children: [
               Icon(Icons.folder_open, size: 80, color: theme.colorScheme.primary),
               const SizedBox(height: 16),
-              Text('Choose a folder on disk',
+              Text(supported ? 'Choose a folder on disk' : 'Choose storage',
                   style: theme.textTheme.headlineSmall),
               const SizedBox(height: 8),
               Text(
-                'Pick a real folder via Chrome/Edge File System Access\n(files are stored on disk, not in browser storage)',
+                supported
+                    ? 'Pick a real folder via Chrome/Edge File System Access\n(files are stored on disk, not in browser storage)'
+                    : 'File System Access not available in this browser\n(need Chrome/Edge)',
                 textAlign: TextAlign.center,
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
@@ -222,7 +323,20 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
               FilledButton.icon(
                 onPressed: _pickDirectory,
                 icon: const Icon(Icons.folder_open),
-                label: const Text('Pick Folder on Disk'),
+                label: Text(supported ? 'Pick Folder on Disk — OS File Browser' : 'Try OS Picker Anyway'),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: () {
+                  ref.read(webUseBrowserStorageProvider.notifier).state = true;
+                  ref.invalidate(recipeRepositoryProvider);
+                  ref.invalidate(foldersProvider);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Using browser storage — folders are virtual (localStorage), not on disk. Create a folder below.')),
+                  );
+                },
+                icon: const Icon(Icons.storage),
+                label: const Text('Use Browser Storage Instead'),
               ),
               const SizedBox(height: 8),
               Text(
