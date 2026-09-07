@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../../../core/constants/app_constants.dart';
 import '../../../../shared/utils/android_saf_helper.dart';
 import '../../../../shared/utils/web_fs_helper.dart';
+import 'package:recipe_app/shared/widgets/file_browser.dart';
 import 'package:recipe_app/features/settings/domain/models/app_settings.dart';
 import 'package:recipe_app/features/settings/presentation/providers/settings_providers.dart';
 import '../../data/repositories/recipe_repository.dart';
@@ -88,13 +89,42 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
         lockParentWindow: true,
       );
     } catch (e) {
+      debugPrint('[PICKER] FilePicker failed: $e — falling back to in-app browser');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not open system picker: $e')),
+        SnackBar(content: Text('System picker failed ($e) — trying in-app browser')),
       );
-      return;
+      final fallback = await showFolderBrowser(context, initialPath: initial);
+      if (fallback == null || fallback == '__native__') return;
+      result = fallback;
     }
-    if (result == null) return;
+    if (result == null) {
+      // FilePicker returns null on cancel — offer in-app fallback on Linux where zenity/kdialog may be missing
+      if (!mounted) return;
+      // Don't auto-fallback on cancel, but if on Linux and picker silently fails, let user try in-app
+      if (defaultTargetPlatform == TargetPlatform.linux) {
+        final tryInApp = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('System picker unavailable'),
+            content: const Text('Install zenity (sudo apt install zenity) or use in-app browser.'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Open In-App Browser')),
+            ],
+          ),
+        );
+        if (tryInApp == true) {
+          final fallback = await showFolderBrowser(context, initialPath: initial);
+          if (fallback == null || fallback == '__native__') return;
+          result = fallback;
+        } else {
+          return;
+        }
+      } else {
+        return;
+      }
+    }
 
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android &&
         result.startsWith('content://')) {

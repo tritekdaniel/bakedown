@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
 import 'package:recipe_app/shared/utils/android_saf_helper.dart';
 import 'package:recipe_app/shared/utils/web_fs_helper.dart';
+import 'package:recipe_app/shared/widgets/file_browser.dart';
 import '../../../ai_transcoder/presentation/providers/ai_providers.dart';
 import '../../../ai_transcoder/data/repositories/lm_studio_repository.dart';
 import '../../../recipes/data/repositories/http_recipe_repository.dart';
@@ -233,13 +234,40 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         lockParentWindow: true,
       );
     } catch (e) {
+      debugPrint('[PICKER] FilePicker failed: $e — falling back to in-app browser');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not open system picker: $e')),
+        SnackBar(content: Text('System picker failed ($e) — trying in-app browser')),
       );
-      return;
+      final fallback = await showFolderBrowser(context, initialPath: initial);
+      if (fallback == null || fallback == '__native__') return;
+      result = fallback;
     }
-    if (result == null) return;
+    if (result == null) {
+      if (defaultTargetPlatform == TargetPlatform.linux) {
+        if (!mounted) return;
+        final tryInApp = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('System picker unavailable'),
+            content: const Text('Install zenity (sudo apt install zenity) or use in-app browser.'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Open In-App Browser')),
+            ],
+          ),
+        );
+        if (tryInApp == true) {
+          final fallback = await showFolderBrowser(context, initialPath: initial);
+          if (fallback == null || fallback == '__native__') return;
+          result = fallback;
+        } else {
+          return;
+        }
+      } else {
+        return;
+      }
+    }
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android && result.startsWith('content://')) {
       await AndroidSafHelper.takePersistablePermission(result);
       await AndroidSafHelper.listFiles(result);
