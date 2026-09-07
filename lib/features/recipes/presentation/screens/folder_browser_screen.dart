@@ -451,9 +451,11 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
                         style: theme.textTheme.titleMedium),
                     const SizedBox(height: 8),
                     Text(
-                      settings.smbEnabled
-                          ? 'Add subfolders to "${settings.smbHost}\\${settings.smbShare}"'
-                          : 'Create subfolders in "${settings.recipeDirectory}"',
+                      kIsWeb
+                          ? 'Create subfolders in shared host folder'
+                          : settings.smbEnabled
+                              ? 'Add subfolders to "${settings.smbHost}\\${settings.smbShare}"'
+                              : 'Create subfolders in "${settings.recipeDirectory}"',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
