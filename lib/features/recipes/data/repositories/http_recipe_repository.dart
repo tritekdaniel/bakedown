@@ -112,7 +112,7 @@ class HttpRecipeRepository implements RecipeRepository {
         }
 
         // Files are .md names, fetch each
-        final mdFiles = files.where((f) => f.endsWith('.md')).toList();
+        final mdFiles = files.where((f) => f.toLowerCase().endsWith('.md')).toList();
         final recipes = <RecipeModel>[];
         for (final f in mdFiles) {
           final content = await readFile(folder, f);

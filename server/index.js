@@ -55,10 +55,20 @@ app.use('/api/file', express.text({ type: ['text/*', 'text/markdown'], limit: '2
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+function safeDecode(s) {
+  if (s == null) return s;
+  try {
+    // Express already decodes params; only decode if still encoded
+    return s.includes('%') ? decodeURIComponent(s) : s;
+  } catch {
+    return s;
+  }
+}
+
 function safePath(folder, filename) {
   try {
-    const f = folder ? decodeURIComponent(folder) : '';
-    const fn = filename ? decodeURIComponent(filename) : null;
+    const f = folder ? safeDecode(folder) : '';
+    const fn = filename ? safeDecode(filename) : null;
     if (f.includes('..') || (fn && fn.includes('..'))) return null;
     if (f.startsWith('/') || f.startsWith('\\')) return null;
     if (fn !== null && (fn.includes('/') || fn.includes('\\'))) return null;

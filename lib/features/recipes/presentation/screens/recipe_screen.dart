@@ -180,7 +180,7 @@ class _RecipeScreenState extends ConsumerState<RecipeScreen>
     final colorScheme = theme.colorScheme;
     final recipe = ref.watch(currentRecipeProvider);
     final settings = ref.watch(settingsProvider);
-    final repo = ref.read(recipeRepositoryProvider).valueOrNull;
+    final repo = ref.watch(recipeRepositoryProvider).valueOrNull;
     final rootPath = repo?.rootPath ?? '';
     final imageResolver = repo != null
         ? (String folder, String fileName) => repo.imagePathFor(folder, fileName)

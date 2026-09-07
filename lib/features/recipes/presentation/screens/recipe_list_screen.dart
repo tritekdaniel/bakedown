@@ -414,7 +414,7 @@ class _RecipeListScreenState extends ConsumerState<RecipeListScreen> {
 
   Widget _buildDetailPanel(ThemeData theme) {
     final recipe = _selectedRecipe!;
-    final repo = ref.read(recipeRepositoryProvider).valueOrNull;
+    final repo = ref.watch(recipeRepositoryProvider).valueOrNull;
     final rootPath = repo?.rootPath ?? '';
     final imageResolver = repo != null
         ? (String folder, String fileName) => repo.imagePathFor(folder, fileName)

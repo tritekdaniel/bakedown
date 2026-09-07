@@ -484,6 +484,7 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
 
     String finalContent = _sanitizeModelOutput(_result!);
     if (imagePaths.isNotEmpty) {
+      final imagesLine = 'images: [${imagePaths.join(', ')}]';
       final lines = finalContent.split('\n');
       if (lines.isNotEmpty && lines.first.trim() == '---') {
         int closingIdx = -1;
@@ -494,7 +495,6 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
           }
         }
         if (closingIdx > 0) {
-          final imagesLine = 'images: [${imagePaths.join(', ')}]';
           final existingIdx = lines.sublist(1, closingIdx).indexWhere((l) => l.trim().startsWith('images:'));
           if (existingIdx >= 0) {
             lines[1 + existingIdx] = imagesLine;
@@ -502,7 +502,11 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
             lines.insert(closingIdx, imagesLine);
           }
           finalContent = lines.join('\n');
+        } else {
+          finalContent = '---\n$imagesLine\n---\n\n$finalContent';
         }
+      } else {
+        finalContent = '---\n$imagesLine\n---\n\n$finalContent';
       }
     }
 
