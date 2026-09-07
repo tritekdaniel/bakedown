@@ -69,11 +69,7 @@ class RecipeModel {
 
     if (frontmatterRaw.isNotEmpty) {
       try {
-        final cleaned = frontmatterRaw.replaceAllMapped(
-          RegExp(r':\s*"(.*?)"'),
-          (m) => ': ${m[1]}',
-        );
-        final yaml = loadYaml(cleaned);
+        final yaml = loadYaml(frontmatterRaw);
         if (yaml is YamlMap) {
           String? _s(dynamic v) => v?.toString();
           title = _s(yaml['title']) ?? '';
@@ -84,7 +80,8 @@ class RecipeModel {
           if (sRaw is int) {
             servings = sRaw;
           } else if (sRaw is String) {
-            servings = int.tryParse(sRaw.replaceAll(RegExp(r'[^0-9]'), ''));
+            final firstNum = RegExp(r'\d+').firstMatch(sRaw);
+            if (firstNum != null) servings = int.tryParse(firstNum.group(0)!);
           }
           difficulty = _s(yaml['difficulty']);
           source = _s(yaml['source']);
@@ -92,11 +89,15 @@ class RecipeModel {
           modified = _s(yaml['modified']);
           final tagsRaw = yaml['tags'];
           if (tagsRaw is YamlList) {
-            tags = tagsRaw.map((e) => e.toString().toLowerCase().trim()).toList();
+            tags = tagsRaw.map((e) => e.toString().toLowerCase().trim()).where((e) => e.isNotEmpty).toList();
+          } else if (tagsRaw is String) {
+            tags = tagsRaw.split(',').map((e) => e.trim().toLowerCase()).where((e) => e.isNotEmpty).toList();
           }
           final imagesRaw = yaml['images'];
           if (imagesRaw is YamlList) {
-            images = imagesRaw.map((e) => e.toString().trim()).toList();
+            images = imagesRaw.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList();
+          } else if (imagesRaw is String) {
+            images = imagesRaw.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
           }
         }
       } catch (_) {}
@@ -104,7 +105,7 @@ class RecipeModel {
 
     if (title.isEmpty) {
       title = fileName
-          .replaceAll('.md', '')
+          .replaceFirst(RegExp(r'\.md$', caseSensitive: false), '')
           .replaceAll('_', ' ')
           .replaceAll('-', ' ')
           .split(' ')
@@ -135,7 +136,7 @@ class RecipeModel {
   String toMarkdown() {
     final buf = StringBuffer();
     buf.writeln('---');
-    buf.writeln(rawFrontmatter);
+    if (rawFrontmatter.trim().isNotEmpty) buf.writeln(rawFrontmatter.trim());
     buf.writeln('---');
     buf.writeln(rawBody);
     return buf.toString();

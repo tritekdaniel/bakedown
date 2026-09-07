@@ -1,4 +1,6 @@
-import 'dart:io';
+import 'dart:async';
+import 'dart:io' if (dart.library.html) 'package:recipe_app/shared/stubs/io_stub.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,13 +12,25 @@ import '../../data/models/recipe_model.dart';
 import 'package:recipe_app/shared/widgets/tag_colors.dart';
 
 class RecipeListScreen extends ConsumerStatefulWidget {
-  const RecipeListScreen({super.key});
+  final String? initialFolder;
+  const RecipeListScreen({super.key, this.initialFolder});
 
   @override
   ConsumerState<RecipeListScreen> createState() => _RecipeListScreenState();
 }
 
 class _RecipeListScreenState extends ConsumerState<RecipeListScreen> {
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initialFolder != null && widget.initialFolder!.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (ref.read(currentFolderProvider) != widget.initialFolder) {
+          ref.read(currentFolderProvider.notifier).state = widget.initialFolder!;
+        }
+      });
+    }
+  }
   RecipeModel? _selectedRecipe;
   final Set<String> _selectedTags = {};
 
@@ -41,7 +55,9 @@ class _RecipeListScreenState extends ConsumerState<RecipeListScreen> {
   }
 
   Future<void> _refresh() {
+    final folder = ref.read(currentFolderProvider);
     ref.invalidate(recipesInFolderProvider);
+    ref.invalidate(subfoldersProvider(folder));
     return Future.value();
   }
 
@@ -60,11 +76,189 @@ class _RecipeListScreenState extends ConsumerState<RecipeListScreen> {
     return tags;
   }
 
+  List<String> _breadcrumbSegments(String folder) {
+    if (folder.isEmpty) return [];
+    return folder.split('/').where((s) => s.isNotEmpty).toList();
+  }
+
+  String _parentPath(String folder) {
+    final segs = _breadcrumbSegments(folder);
+    if (segs.length <= 1) return '';
+    return segs.sublist(0, segs.length - 1).join('/');
+  }
+
+  Widget _buildBreadcrumb(BuildContext context, String folder, ThemeData theme) {
+    final segs = _breadcrumbSegments(folder);
+    if (folder.isEmpty) return const SizedBox.shrink();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      color: theme.colorScheme.surfaceContainerLowest,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            InkWell(
+              onTap: () {
+                ref.read(currentFolderProvider.notifier).state = '';
+                context.go('/');
+              },
+              child: Row(children: [
+                Icon(Icons.home_outlined, size: 16, color: theme.colorScheme.primary),
+                const SizedBox(width: 4),
+                Text('Root', style: theme.textTheme.labelMedium?.copyWith(color: theme.colorScheme.primary)),
+              ]),
+            ),
+            for (int i = 0; i < segs.length; i++) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                child: Icon(Icons.chevron_right, size: 16, color: theme.colorScheme.onSurfaceVariant),
+              ),
+              InkWell(
+                onTap: i == segs.length - 1
+                    ? null
+                    : () {
+                        final path = segs.sublist(0, i + 1).join('/');
+                        ref.read(currentFolderProvider.notifier).state = path;
+                        context.go('/folder/${Uri.encodeComponent(path)}');
+                      },
+                child: Text(
+                  segs[i],
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: i == segs.length - 1 ? theme.colorScheme.onSurface : theme.colorScheme.primary,
+                    fontWeight: i == segs.length - 1 ? FontWeight.w600 : FontWeight.w400,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSubfoldersSection(List<String> subfolders, String folder, ThemeData theme) {
+    if (subfolders.isEmpty) return const SizedBox.shrink();
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.folder_open, size: 16, color: theme.colorScheme.primary),
+              const SizedBox(width: 6),
+              Text('Subfolders', style: theme.textTheme.labelMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant, fontWeight: FontWeight.w600)),
+              const Spacer(),
+              IconButton(
+                icon: const Icon(Icons.create_new_folder_outlined, size: 18),
+                tooltip: 'New subfolder',
+                onPressed: () => _createSubfolder(context, folder),
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ...subfolders.map((sf) {
+            final fullPath = folder.isEmpty ? sf : '$folder/$sf';
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                dense: true,
+                leading: CircleAvatar(
+                  backgroundColor: theme.colorScheme.secondaryContainer,
+                  child: Icon(Icons.folder, color: theme.colorScheme.onSecondaryContainer, size: 18),
+                ),
+                title: Text(sf, style: theme.textTheme.titleSmall),
+                subtitle: Text(fullPath, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: Icon(Icons.delete_outline, size: 18, color: theme.colorScheme.error),
+                      tooltip: 'Delete subfolder',
+                      onPressed: () => _deleteSubfolder(fullPath, sf),
+                    ),
+                    Icon(Icons.chevron_right, color: theme.colorScheme.onSurfaceVariant, size: 18),
+                  ],
+                ),
+                onTap: () {
+                  ref.read(currentFolderProvider.notifier).state = fullPath;
+                  context.push('/folder/${Uri.encodeComponent(fullPath)}');
+                },
+              ),
+            );
+          }),
+          const Divider(height: 16),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _createSubfolder(BuildContext context, String parent) async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(parent.isEmpty ? 'New Folder' : 'New subfolder in "$parent"'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(hintText: 'Folder name', border: OutlineInputBorder()),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: const Text('Create')),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty) return;
+    if (name.contains('/') || name.contains('\\')) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Folder name cannot contain / or \\')));
+      return;
+    }
+    final fullPath = parent.isEmpty ? name : '$parent/$name';
+    final repo = ref.read(recipeRepositoryProvider).valueOrNull;
+    final ok = repo != null ? await repo.createFolder(fullPath) : false;
+    ref.invalidate(subfoldersProvider(parent));
+    ref.invalidate(foldersProvider);
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Create failed — check permissions')));
+    }
+  }
+
+  Future<void> _deleteSubfolder(String fullPath, String displayName) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Folder'),
+        content: Text('Delete subfolder "$displayName" and all its recipes?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    final repo = ref.read(recipeRepositoryProvider).valueOrNull;
+    final ok = repo != null ? await repo.deleteFolder(fullPath) : false;
+    final parent = _parentPath(fullPath);
+    ref.invalidate(subfoldersProvider(parent));
+    ref.invalidate(subfoldersProvider(fullPath));
+    ref.invalidate(foldersProvider);
+    if (!ok && mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Delete failed — check permissions')));
+  }
+
   @override
   Widget build(BuildContext context) {
     final folder = ref.watch(currentFolderProvider);
     final recipesAsync = ref.watch(recipesInFolderProvider);
+    final subfoldersAsync = ref.watch(subfoldersProvider(folder));
     final recipes = recipesAsync.valueOrNull ?? [];
+    final subfolders = subfoldersAsync.valueOrNull ?? [];
     final theme = Theme.of(context);
     final isTablet = MediaQuery.of(context).size.width >= 600;
     final searchQuery = ref.watch(recipeSearchQueryProvider);
@@ -73,15 +267,20 @@ class _RecipeListScreenState extends ConsumerState<RecipeListScreen> {
     final allTags = _allTags(recipes);
 
     ref.listen(currentFolderProvider, (prev, next) {
-      if (prev != next) ref.read(recipeSearchQueryProvider.notifier).state = '';
+      if (prev != next) {
+        ref.read(recipeSearchQueryProvider.notifier).state = '';
+        ref.read(debouncedSearchQueryProvider.notifier).state = '';
+      }
     });
 
+    final displayFolder = folder.contains('/') ? folder.split('/').last : folder;
     if (isTablet) {
       return Scaffold(
         appBar: AppBar(
-          title: Text(folder),
+          title: Text(displayFolder),
           actions: [
             IconButton(icon: const Icon(Icons.refresh), tooltip: 'Refresh', onPressed: _refresh),
+            IconButton(icon: const Icon(Icons.create_new_folder_outlined), tooltip: 'New subfolder', onPressed: () => _createSubfolder(context, folder)),
             IconButton(icon: const Icon(Icons.add), tooltip: 'New recipe', onPressed: () => _createRecipe(context, ref, folder)),
           ],
         ),
@@ -92,7 +291,9 @@ class _RecipeListScreenState extends ConsumerState<RecipeListScreen> {
               width: 320,
               child: Column(
                 children: [
+                  _buildBreadcrumb(context, folder, theme),
                   _SearchBarWidget(),
+                  _buildSubfoldersSection(subfolders, folder, theme),
                   if (allTags.isNotEmpty) _TagFilterBar(
                     allTags: allTags,
                     selectedTags: _selectedTags,
@@ -125,15 +326,18 @@ class _RecipeListScreenState extends ConsumerState<RecipeListScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(folder),
+        title: Text(displayFolder),
         actions: [
           IconButton(icon: const Icon(Icons.refresh), tooltip: 'Refresh', onPressed: _refresh),
+          IconButton(icon: const Icon(Icons.create_new_folder_outlined), tooltip: 'New subfolder', onPressed: () => _createSubfolder(context, folder)),
           IconButton(icon: const Icon(Icons.add), tooltip: 'New recipe', onPressed: () => _createRecipe(context, ref, folder)),
         ],
       ),
       body: Column(
         children: [
+          _buildBreadcrumb(context, folder, theme),
           _SearchBarWidget(),
+          _buildSubfoldersSection(subfolders, folder, theme),
           if (allTags.isNotEmpty) _TagFilterBar(
             allTags: allTags,
             selectedTags: _selectedTags,
@@ -301,12 +505,14 @@ class _RecipeListScreenState extends ConsumerState<RecipeListScreen> {
             ),
             onPressed: () async {
               final repo = ref.read(recipeRepositoryProvider).valueOrNull;
-              final ok = repo != null ? await repo.deleteFile(folder, recipe.fileName) : true;
-              if (repo != null && ok) {
+              final ok = repo != null ? await repo.deleteFile(folder, recipe.fileName) : false;
+              if (repo != null && ok && !kIsWeb) {
                 for (final img in recipe.images) {
                   if (repo.rootPath != null) {
-                    final imgFile = File(p.join(repo.rootPath!, folder, img));
-                    if (imgFile.existsSync()) imgFile.deleteSync();
+                    try {
+                      final imgFile = File(p.join(repo.rootPath!, folder, img));
+                      if (imgFile.existsSync()) imgFile.deleteSync();
+                    } catch (_) {}
                   }
                 }
               }
@@ -345,7 +551,14 @@ class _RecipeListScreenState extends ConsumerState<RecipeListScreen> {
 
     if (result == null) return;
 
-    final filename = '${result.title}.md';
+    String _sanitize(String t) {
+      var s = t.trim().replaceAll(RegExp(r'[\\/:*?"<>|]'), '-').replaceAll(RegExp(r'\s+'), ' ').trim();
+      if (s.isEmpty) s = 'Untitled';
+      if (!s.toLowerCase().endsWith('.md')) s = '$s.md';
+      return s;
+    }
+
+    final filename = _sanitize(result.title);
     final tags = result.tags.isNotEmpty ? '[${result.tags.join(', ')}]' : '[]';
     final source = result.source.isNotEmpty ? result.source : '';
     final servings = result.servings > 0 ? result.servings : 1;
@@ -368,15 +581,18 @@ class _RecipeListScreenState extends ConsumerState<RecipeListScreen> {
             })
             .join('\n')
         : '1. ';
+    String _yamlEsc(String v) => v.contains(':') || v.contains('"') || v.contains("'") || v.contains('#')
+        ? '"${v.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"'
+        : v;
     final template = '''---
-title: ${result.title}
-prep_time: ${result.prepTime}
-cook_time: ${result.cookTime}
-total_time: ${result.totalTime}
+title: ${_yamlEsc(result.title)}
+prep_time: ${_yamlEsc(result.prepTime)}
+cook_time: ${_yamlEsc(result.cookTime)}
+total_time: ${_yamlEsc(result.totalTime)}
 servings: $servings
-difficulty: ${result.difficulty}
+difficulty: ${_yamlEsc(result.difficulty)}
 tags: $tags
-source: $source
+source: ${_yamlEsc(source)}
 ---
 
 ## Ingredients
@@ -605,6 +821,27 @@ class _SearchBarWidget extends ConsumerStatefulWidget {
 }
 
 class _SearchBarWidgetState extends ConsumerState<_SearchBarWidget> {
+  Timer? _debounce;
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+  void _onChanged(String v) {
+    ref.read(recipeSearchQueryProvider.notifier).state = v;
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 300), () {
+      if (mounted) ref.read(debouncedSearchQueryProvider.notifier).state = v;
+    });
+  }
+
+  void _clear() {
+    _debounce?.cancel();
+    ref.read(recipeSearchQueryProvider.notifier).state = '';
+    ref.read(debouncedSearchQueryProvider.notifier).state = '';
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -612,12 +849,12 @@ class _SearchBarWidgetState extends ConsumerState<_SearchBarWidget> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: TextField(
-        onChanged: (v) => ref.read(recipeSearchQueryProvider.notifier).state = v,
+        onChanged: _onChanged,
         decoration: InputDecoration(
           hintText: 'Search recipes...',
           prefixIcon: Icon(Icons.search, color: theme.colorScheme.onSurfaceVariant),
           suffixIcon: searchQuery.isNotEmpty
-              ? IconButton(icon: const Icon(Icons.clear), onPressed: () => ref.read(recipeSearchQueryProvider.notifier).state = '')
+              ? IconButton(icon: const Icon(Icons.clear), onPressed: _clear)
               : null,
           filled: true,
           fillColor: theme.colorScheme.surfaceContainerHighest,

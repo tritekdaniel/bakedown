@@ -1,11 +1,14 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:io' if (dart.library.html) 'package:recipe_app/shared/stubs/io_stub.dart';
+import 'dart:typed_data';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../../../../core/theme/app_spacing.dart';
 import '../../../../core/theme/app_radius.dart';
 import '../../../settings/presentation/providers/settings_providers.dart';
@@ -24,7 +27,7 @@ class AITranscodeScreen extends ConsumerStatefulWidget {
 enum _StepState { waiting, active, done, skipped }
 
 class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
-  final List<File> _images = [];
+  final List<XFile> _images = [];
   String? _textContent;
   String? _result;
   bool _loading = false;
@@ -39,6 +42,7 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
   final _nameController = TextEditingController();
   String? _selectedFolder;
   late final TextEditingController _resultController;
+  final Map<String, Future<Uint8List>> _thumbFutures = {};
 
   @override
   void initState() {
@@ -72,55 +76,103 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
 
   @override
   void dispose() {
+    _cancelToken?.cancel();
     _nameController.dispose();
     _resultController.dispose();
     super.dispose();
   }
 
   Future<void> _pickImage(ImageSource source) async {
+    if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS)) {
+      try {
+        if (source == ImageSource.camera) {
+          final status = await Permission.camera.request();
+          if (status.isDenied || status.isPermanentlyDenied) {
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(status.isPermanentlyDenied
+                    ? 'Camera permission denied — enable in app settings'
+                    : 'Camera permission required'),
+                action: status.isPermanentlyDenied
+                    ? SnackBarAction(label: 'Settings', onPressed: () => openAppSettings())
+                    : null,
+              ),
+            );
+            return;
+          }
+        } else {
+          final photoStatus = await Permission.photos.request();
+          if (photoStatus.isPermanentlyDenied) {
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('Photo permission denied — enable in app settings'),
+                action: SnackBarAction(label: 'Settings', onPressed: () => openAppSettings()),
+              ),
+            );
+          }
+        }
+      } catch (_) {}
+    }
     final picker = ImagePicker();
-    if (source == ImageSource.gallery) {
-      final picked = await picker.pickMultiImage(maxWidth: 2048);
-      if (picked.isNotEmpty) {
-        setState(() {
-          _images.addAll(picked.map((p) => File(p.path)));
-          _textContent = null;
-          _resetSteps();
-        });
+    try {
+      if (source == ImageSource.gallery) {
+        final picked = await picker.pickMultiImage(maxWidth: 2048);
+        if (picked.isNotEmpty) {
+          setState(() {
+            _images.addAll(picked);
+            _textContent = null;
+            _resetSteps();
+          });
+        }
+      } else {
+        final picked = await picker.pickImage(source: source, maxWidth: 2048);
+        if (picked != null) {
+          setState(() {
+            _images.add(picked);
+            _textContent = null;
+            _resetSteps();
+          });
+        }
       }
-    } else {
-      final picked = await picker.pickImage(source: source, maxWidth: 2048);
-      if (picked != null) {
-        setState(() {
-          _images.add(File(picked.path));
-          _textContent = null;
-          _resetSteps();
-        });
-      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not pick image: $e')));
     }
   }
 
   Future<void> _pickFile() async {
-    final result = await FilePicker.platform.pickFiles();
+    final result = await FilePicker.platform.pickFiles(withData: true);
     if (result == null || result.files.isEmpty) return;
-    final file = File(result.files.single.path!);
-    final ext = result.files.single.extension?.toLowerCase() ?? '';
+    final pf = result.files.single;
+    final ext = pf.extension?.toLowerCase() ?? '';
 
     final imageExtensions = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'];
     if (imageExtensions.contains(ext)) {
-      setState(() {
-        _images.add(file);
-        _textContent = null;
-        _resetSteps();
-      });
-    } else {
-      try {
-        final content = await file.readAsString();
+      final xfile = pf.path != null && !kIsWeb ? XFile(pf.path!) : (pf.bytes != null ? XFile.fromData(pf.bytes!, name: pf.name, mimeType: 'image/$ext') : null);
+      if (xfile != null) {
         setState(() {
-          _textContent = content;
-          _images.clear();
+          _images.add(xfile);
+          _textContent = null;
           _resetSteps();
         });
+      }
+    } else {
+      try {
+        String? content;
+        if (pf.bytes != null) {
+          content = String.fromCharCodes(pf.bytes!);
+        } else if (pf.path != null) {
+          content = await File(pf.path!).readAsString();
+        }
+        if (content != null) {
+          setState(() {
+            _textContent = content;
+            _images.clear();
+            _resetSteps();
+          });
+        }
       } catch (_) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -172,11 +224,25 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
       final prompt =
           await bundle.loadString('assets/prompts/recipe-system-prompt.md');
       String? streamingError;
-      final imagePaths = _images.map((f) => f.path).toList();
+      List<Uint8List>? imageBytes;
+      List<String>? imageNames;
+      if (_images.isNotEmpty) {
+        imageBytes = [];
+        imageNames = [];
+        for (final xf in _images) {
+          try {
+            final bytes = await xf.readAsBytes();
+            imageBytes.add(bytes);
+            imageNames.add(xf.name.isNotEmpty ? xf.name : 'image.jpg');
+          } catch (_) {}
+        }
+      }
       final result = await repo.transcodeStreaming(
         modelId: modelId,
         systemPrompt: prompt,
-        imagePaths: imagePaths.isEmpty ? null : imagePaths,
+        imagePaths: (imageBytes != null && imageBytes.isNotEmpty) ? null : (kIsWeb ? null : _images.map((f) => f.path).toList()),
+        imageBytesList: imageBytes,
+        imageNames: imageNames,
         textContent: _textContent,
         cancelToken: _cancelToken,
         onEvent: (event, data) {
@@ -185,7 +251,8 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
             case 'model_load.start':
               _setStep(1, _StepState.active);
             case 'model_load.progress':
-              setState(() => _modelLoadProgress = (data['progress'] as num?)?.toDouble());
+              final p = (data['progress'] as num?)?.toDouble();
+              if (p != null) setState(() => _modelLoadProgress = p);
             case 'model_load.end':
               _setStep(1, _StepState.done);
               _setStep(2, _StepState.active);
@@ -193,30 +260,44 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
             case 'prompt_processing.start':
               _setStep(2, _StepState.active);
             case 'message.delta':
-              setState(() => _tokenCount = (_tokenCount ?? 0) + (data['token_count'] as int? ?? 1));
+              final inc = data['token_count'] as int? ?? (data['content'] as String?)?.length ?? 1;
+              setState(() => _tokenCount = (_tokenCount ?? 0) + inc);
             case 'error':
-              streamingError = data['message'] as String? ?? 'Unknown error';
+              streamingError = (data['message'] as String?) ??
+                  (data['error'] as String?) ??
+                  data.toString();
               _setStep(2, _StepState.done);
             case 'chat.end':
             case 'message.end':
               _setStep(2, _StepState.done);
+              setState(() => _modelLoadProgress = null);
           }
         },
       );
       _setStep(2, _StepState.done);
+      setState(() => _modelLoadProgress = null);
 
       if (!_cancelling) {
+        final stripped = result != null ? _sanitizeModelOutput(result) : null;
+        final isEmpty = stripped == null || stripped.trim().isEmpty;
         setState(() {
-          _result = result != null ? _stripCodeFences(result) : null;
+          _result = isEmpty ? null : stripped;
           if (_result != null) _resultController.text = _result!;
         });
-      }
-
-      if (result == null && mounted && !_cancelling) {
-        final msg = streamingError ?? 'Check LM Studio connection or URL: ${settings.lmStudioUrl}';
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Formatting failed: $msg')),
-        );
+        if (isEmpty && mounted) {
+          final hint = settings.lmStudioUrl.contains('localhost') && !kIsWeb
+              ? ' On mobile use http://<PC-LAN-IP>:1234, not localhost. Also check LM Studio exposes /v1/chat/completions or /api/v1/chat.'
+              : ' Check model is vision-capable and URL is correct.';
+          final msg = streamingError != null
+              ? '$streamingError$hint'
+              : 'Empty response — no content returned.$hint (URL: ${settings.lmStudioUrl})';
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Formatting failed: $msg'),
+              duration: const Duration(seconds: 6),
+            ),
+          );
+        }
       }
     } finally {
       if (mounted) {
@@ -238,6 +319,34 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
     setState(() => _stepStates[index] = state);
   }
 
+  void _showFullScreenImageForXFile(BuildContext context, XFile file) {
+    final cs = Theme.of(context).colorScheme;
+    final key = file.path.isNotEmpty ? file.path : file.name;
+    final fut = _thumbFutures[key] ?? file.readAsBytes();
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => Scaffold(
+          backgroundColor: cs.surface,
+          appBar: AppBar(backgroundColor: cs.surface),
+          body: Center(
+            child: InteractiveViewer(
+              panEnabled: true,
+              minScale: 0.5,
+              maxScale: 4.0,
+              child: FutureBuilder<Uint8List>(
+                future: fut,
+                builder: (c, snap) {
+                  if (snap.hasData) return Image.memory(snap.data!, fit: BoxFit.contain);
+                  return const CircularProgressIndicator();
+                },
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showFullScreenImage(BuildContext context, String imagePath) {
     final cs = Theme.of(context).colorScheme;
     Navigator.of(context).push(
@@ -252,7 +361,9 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
               panEnabled: true,
               minScale: 0.5,
               maxScale: 4.0,
-              child: Image.file(File(imagePath), fit: BoxFit.contain),
+              child: kIsWeb
+                  ? const Icon(Icons.broken_image)
+                  : Image.file(File(imagePath) as dynamic, fit: BoxFit.contain),
             ),
           ),
         ),
@@ -270,7 +381,12 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
       );
       return;
     }
-    final filename = '$name.md';
+    String _sanitize(String t) {
+      var s = t.trim().replaceAll(RegExp(r'[\\/:*?"<>|]'), '-');
+      if (!s.toLowerCase().endsWith('.md')) s = '$s.md';
+      return s;
+    }
+    final filename = _sanitize(name);
     final repo = ref.read(recipeRepositoryProvider).valueOrNull;
 
     if (repo == null) {
@@ -282,10 +398,12 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
 
     final imagePaths = <String>[];
     final slug = name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-').replaceAll(RegExp(r'^-|-$'), '');
-    if (_attachImages && _images.isNotEmpty) {
+    if (_attachImages && _images.isNotEmpty && !kIsWeb) {
       try {
-        if (repo.rootPath != null) {
-          final folderDir = Directory(p.join(repo.rootPath!, folder));
+        final rp = repo.rootPath;
+        final isHttp = rp != null && (rp.startsWith('http://') || rp.startsWith('https://'));
+        if (rp != null && !isHttp) {
+          final folderDir = Directory(p.join(rp, folder));
           if (!folderDir.existsSync()) {
             folderDir.createSync(recursive: true);
           }
@@ -296,7 +414,8 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
               if (sourceFile.path.startsWith('content://')) {
                 await XFile(sourceFile.path).saveTo(destPath);
               } else {
-                await sourceFile.copy(destPath);
+                final bytes = await sourceFile.readAsBytes();
+                await File(destPath).writeAsBytes(bytes);
               }
               imagePaths.add('$slug-${i + 1}.jpg');
             } catch (e) {
@@ -313,7 +432,7 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
       }
     }
 
-    String finalContent = _result!;
+    String finalContent = _sanitizeModelOutput(_result!);
     if (imagePaths.isNotEmpty) {
       final lines = finalContent.split('\n');
       if (lines.isNotEmpty && lines.first.trim() == '---') {
@@ -456,10 +575,12 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
       spacing: AppSpacing.xxs,
       runSpacing: AppSpacing.xxs,
       children: List.generate(_images.length, (i) {
+        final key = _images[i].path.isNotEmpty ? _images[i].path : _images[i].name;
+        final fut = _thumbFutures.putIfAbsent(key, () => _images[i].readAsBytes());
         return Stack(
           children: [
             GestureDetector(
-              onTap: () => _showFullScreenImage(context, _images[i].path),
+              onTap: () => _showFullScreenImageForXFile(context, _images[i]),
               child: Container(
                 width: 100, height: 100,
                 decoration: BoxDecoration(
@@ -469,7 +590,13 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
                 ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(AppRadius.sm),
-                  child: Image.file(_images[i], fit: BoxFit.cover),
+                  child: FutureBuilder<Uint8List>(
+                    future: fut,
+                    builder: (ctx, snap) {
+                      if (!snap.hasData) return const SizedBox();
+                      return Image.memory(snap.data!, fit: BoxFit.cover);
+                    },
+                  ),
                 ),
               ),
             ),
@@ -595,17 +722,24 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
 
   Widget _saveForm() {
     final folders = ref.watch(foldersProvider).valueOrNull ?? [];
+    final effectiveValue = _selectedFolder != null && (folders.contains(_selectedFolder) || _selectedFolder == '__new__') ? _selectedFolder : null;
+    final showSelectedAsExtra = _selectedFolder != null && !folders.contains(_selectedFolder) && _selectedFolder != '__new__' && _selectedFolder!.isNotEmpty;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         DropdownButtonFormField<String>(
-          key: ValueKey(_selectedFolder),
-          initialValue: _selectedFolder,
+          key: ValueKey(effectiveValue ?? '__null__'),
+          initialValue: effectiveValue,
           items: [
             ...folders.map((f) => DropdownMenuItem(
                   value: f,
                   child: Text(f),
                 )),
+            if (showSelectedAsExtra)
+              DropdownMenuItem(
+                value: _selectedFolder,
+                child: Text(_selectedFolder!),
+              ),
             const DropdownMenuItem(
               value: '__new__',
               child: Text('New folder...'),
@@ -645,77 +779,93 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
   @override
   Widget build(BuildContext context) {
     final hasSource = _images.isNotEmpty || _textContent != null;
+    final bottomPad = MediaQuery.of(context).viewPadding.bottom + MediaQuery.of(context).viewInsets.bottom;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Auto Format'),
       ),
-      body: SingleChildScrollView(
-        child: Center(
-          child: SizedBox(
-            width: 960,
-            child: Padding(
-              padding: const EdgeInsets.all(AppSpacing.md),
-              child: Column(
-                children: [
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(AppSpacing.sm),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          _sectionHeader('Recipe Source', Icons.source_outlined),
-                          const SizedBox(height: AppSpacing.sm),
-                          if (!hasSource) _sourcePicker(),
-                          if (hasSource) ...[
-                            _sourceContent(),
-                            const SizedBox(height: AppSpacing.sm),
-                            if (_loading)
-                              _ProcessingStatusCard(
-                                stepLabels: _stepLabels,
-                                stepStates: _stepStates,
-                                onCancel: _cancelTranscode,
-                                modelLoadProgress: _modelLoadProgress,
-                                tokenCount: _tokenCount,
-                                generationStart: _generationStart,
-                              )
-                            else
-                              SizedBox(
-                                height: 48,
-                                child: FilledButton.icon(
-                                  onPressed: _transcode,
-                                  icon: const Icon(Icons.auto_awesome),
-                                  label: const Text('Format Recipe'),
-                                ),
-                              ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
-                  if (_result != null) ...[
-                    const SizedBox(height: AppSpacing.md),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: EdgeInsets.only(bottom: bottomPad + AppSpacing.md),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 960),
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                child: Column(
+                  children: [
                     Card(
                       child: Padding(
                         padding: const EdgeInsets.all(AppSpacing.sm),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            _sectionHeader('Preview & Save', Icons.article_outlined),
+                            _sectionHeader('Recipe Source', Icons.source_outlined),
                             const SizedBox(height: AppSpacing.sm),
-                            _resultEditor(),
-                            const SizedBox(height: AppSpacing.sm),
-                            _saveForm(),
+                            if (!hasSource) _sourcePicker(),
+                            if (hasSource) ...[
+                              _sourceContent(),
+                              const SizedBox(height: AppSpacing.sm),
+                              if (_loading)
+                                _ProcessingStatusCard(
+                                  stepLabels: _stepLabels,
+                                  stepStates: _stepStates,
+                                  onCancel: _cancelTranscode,
+                                  modelLoadProgress: _modelLoadProgress,
+                                  tokenCount: _tokenCount,
+                                  generationStart: _generationStart,
+                                )
+                              else
+                                SizedBox(
+                                  height: 48,
+                                  width: double.infinity,
+                                  child: FilledButton.icon(
+                                    onPressed: _transcode,
+                                    icon: const Icon(Icons.auto_awesome),
+                                    label: const Text('Format Recipe'),
+                                  ),
+                                ),
+                            ],
                           ],
                         ),
                       ),
                     ),
+                    if (_result != null) ...[
+                      const SizedBox(height: AppSpacing.md),
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(AppSpacing.sm),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _sectionHeader('Preview & Save', Icons.article_outlined),
+                              const SizedBox(height: AppSpacing.sm),
+                              _resultEditor(),
+                              const SizedBox(height: AppSpacing.sm),
+                              _saveForm(),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                    if (!hasSource && _result == null && !_loading)
+                      Padding(
+                        padding: const EdgeInsets.only(top: AppSpacing.md),
+                        child: Text(
+                          'Tip: on mobile use your PC\'s LAN IP (e.g. http://192.168.1.10:1234) in Settings → LM Studio URL, not localhost.',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
                   ],
-              ],
+                ),
+              ),
             ),
           ),
         ),
-      ),
       ),
     );
   }
@@ -1043,4 +1193,189 @@ String _stripCodeFences(String text) {
     if (t.endsWith('```')) t = t.substring(0, t.length - 3);
   }
   return t.trim();
+}
+
+String _sanitizeModelOutput(String text) {
+  var t = text;
+  t = t.replaceAll(RegExp(r'<think>.*?</think>', caseSensitive: false, dotAll: true), '');
+  t = t.replaceAll(RegExp(r'<thinking>.*?</thinking>', caseSensitive: false, dotAll: true), '');
+  t = t.replaceAll(RegExp(r'<reasoning>.*?</reasoning>', caseSensitive: false, dotAll: true), '');
+  t = t.replaceAll(RegExp(r'<thought>.*?</thought>', caseSensitive: false, dotAll: true), '');
+  t = t.replaceAll(RegExp(r'<analysis>.*?</analysis>', caseSensitive: false, dotAll: true), '');
+  t = t.replaceAll(RegExp(r'<\|channel\|>.*?<\|message\|>', caseSensitive: false, dotAll: true), '');
+  t = t.replaceAll(RegExp(r'^\s*(reasoning|thought|analysis|chain-of-thought)\s*:.*$', caseSensitive: false, multiLine: true), '');
+  t = t.replaceAll('```', '');
+  t = t.replaceAll(RegExp(r'^\s*yaml\s*$', multiLine: true, caseSensitive: false), '');
+  t = t.trim();
+  t = _stripCodeFences(t);
+  t = t.trim();
+
+  final fmRegex = RegExp(r'^\s*---\s*\n([\s\S]*?)\n\s*---\s*\n', multiLine: true);
+  final fms = fmRegex.allMatches(t).toList();
+  String frontmatter = '';
+  int fmEnd = 0;
+  if (fms.isNotEmpty) {
+    for (var i = 0; i < fms.length; i++) {
+      final block = fms[i].group(0)!;
+      if (block.contains('title:')) {
+        frontmatter = block.trim();
+        fmEnd = fms[i].end;
+        break;
+      }
+    }
+    if (frontmatter.isEmpty) {
+      frontmatter = fms.first.group(0)!.trim();
+      fmEnd = fms.first.end;
+    }
+  } else {
+    final idx = t.indexOf('---');
+    if (idx != -1) {
+      final second = t.indexOf('---', idx + 3);
+      if (second != -1) {
+        final endNl = t.indexOf('\n', second + 3);
+        final end = endNl == -1 ? t.length : endNl + 1;
+        frontmatter = t.substring(idx, end).trim();
+        fmEnd = end;
+      }
+    }
+  }
+  if (frontmatter.isEmpty) {
+    final m = RegExp(r'---\s*\n').firstMatch(t);
+    if (m != null) {
+      t = t.substring(m.start).trim();
+      return t;
+    }
+    return t.trim();
+  }
+
+  frontmatter = frontmatter.split('\n').map((e) => e.trim()).join('\n').trim();
+
+  var remainder = t.substring(fmEnd).trim();
+
+  final ingIdx = remainder.toLowerCase().indexOf('## ingredients');
+  if (ingIdx != -1) {
+    final firstMatch = RegExp(r'##\s*ingredients', caseSensitive: false).firstMatch(remainder);
+    if (firstMatch != null) {
+      remainder = remainder.substring(firstMatch.start);
+    }
+  }
+
+  final lines = remainder.split('\n');
+  final kept = <String>[];
+  final allowedHeader = RegExp(r'^##\s+(Ingredients|Instructions|Nutrition|Notes)\s*$', caseSensitive: false);
+  final subHeader = RegExp(r'^###\s+.+');
+  final ingredientCheckbox = RegExp(r'^- \[[ xX]\]\s+.+');
+  final ingredientPlainBullet = RegExp(r'^- +.+');
+  final numbered = RegExp(r'^\d+[\.\)]\s+.+');
+  final tableRow = RegExp(r'^\|.*\|\s*$');
+  final tableSep = RegExp(r'^\|[\s\-:|]+\|\s*$');
+  String currentSection = '';
+  String currentHeaderCanonical = '';
+  final seenHeaders = <String>{};
+  bool skipDuplicateSection = false;
+
+  String canonicalHeader(String h) {
+    final lower = h.toLowerCase().trim();
+    if (lower.contains('ingredient')) return 'Ingredients';
+    if (lower.contains('instruction') || lower.contains('direction') || lower.contains('step')) return 'Instructions';
+    if (lower.contains('nutrition')) return 'Nutrition';
+    if (lower.contains('note')) return 'Notes';
+    return h;
+  }
+
+  for (final raw in lines) {
+    final line = raw.trimRight();
+    final trimmed = line.trim();
+    if (trimmed.isEmpty) {
+      if (!skipDuplicateSection) kept.add('');
+      continue;
+    }
+    final headerMatch = RegExp(r'^##\s+(.+)\s*$').firstMatch(trimmed);
+    if (headerMatch != null) {
+      final rawHeader = headerMatch.group(1)!.trim();
+      final canonical = canonicalHeader(rawHeader);
+      final isAllowed = allowedHeader.hasMatch('## $canonical');
+      if (isAllowed) {
+        if (seenHeaders.contains(canonical)) {
+          skipDuplicateSection = true;
+          continue;
+        }
+        seenHeaders.add(canonical);
+        skipDuplicateSection = false;
+        currentSection = canonical;
+        currentHeaderCanonical = canonical;
+        kept.add('## $canonical');
+        continue;
+      } else {
+        skipDuplicateSection = true;
+        continue;
+      }
+    }
+    if (skipDuplicateSection) continue;
+    if (subHeader.hasMatch(trimmed)) {
+      if (currentHeaderCanonical == 'Ingredients') kept.add(trimmed);
+      continue;
+    }
+    if (ingredientCheckbox.hasMatch(trimmed)) {
+      if (currentHeaderCanonical == 'Ingredients' || currentHeaderCanonical.isEmpty) {
+        kept.add(trimmed);
+        if (currentHeaderCanonical.isEmpty) currentHeaderCanonical = 'Ingredients';
+        continue;
+      }
+    }
+    if (ingredientPlainBullet.hasMatch(trimmed) && currentHeaderCanonical == 'Ingredients') {
+      kept.add(trimmed);
+      continue;
+    }
+    if (numbered.hasMatch(trimmed)) {
+      if (currentHeaderCanonical == 'Instructions' || currentHeaderCanonical == 'Ingredients') {
+        if (currentHeaderCanonical == 'Ingredients' && !trimmed.startsWith('-')) {
+          currentHeaderCanonical = 'Instructions';
+          currentSection = 'Instructions';
+        }
+        kept.add(trimmed);
+        continue;
+      }
+    }
+    if (tableRow.hasMatch(trimmed) || tableSep.hasMatch(trimmed)) {
+      if (currentHeaderCanonical == 'Nutrition') kept.add(trimmed);
+      continue;
+    }
+    if (ingredientPlainBullet.hasMatch(trimmed)) {
+      if (currentHeaderCanonical == 'Notes' || currentHeaderCanonical == 'Nutrition') {
+        kept.add(trimmed);
+        continue;
+      }
+      if (currentHeaderCanonical == 'Instructions') {
+        kept.add(trimmed);
+        continue;
+      }
+      continue;
+    }
+    final isHallucinated = trimmed.startsWith('**') ||
+        trimmed.startsWith('Let\'s') ||
+        trimmed.startsWith('From input') ||
+        trimmed.startsWith('Format as') ||
+        trimmed.startsWith('Convert ') ||
+        trimmed.startsWith('Wait,') ||
+        trimmed.startsWith('Actually,') ||
+        trimmed.startsWith('I will') ||
+        trimmed.startsWith('Check ') ||
+        trimmed.startsWith('Re-format') ||
+        RegExp(r'^\d+\.\s+\*\*').hasMatch(trimmed) ||
+        trimmed.contains('Identify Ingredients') ||
+        trimmed.contains('Identify Instructions') ||
+        trimmed.contains('Check Constraints');
+    if (isHallucinated) continue;
+    if (currentHeaderCanonical.isNotEmpty) {
+      kept.add(trimmed);
+    }
+  }
+
+  while (kept.isNotEmpty && kept.first.trim().isEmpty) kept.removeAt(0);
+  while (kept.isNotEmpty && kept.last.trim().isEmpty) kept.removeLast();
+
+  final body = kept.join('\n').replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
+  if (body.isEmpty) return frontmatter;
+  return '$frontmatter\n\n$body'.trim();
 }

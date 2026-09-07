@@ -1,12 +1,14 @@
-import 'dart:io';
+import 'dart:io' if (dart.library.html) 'package:recipe_app/shared/stubs/io_stub.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:go_router/go_router.dart';
 import 'package:recipe_app/shared/utils/android_saf_helper.dart';
+import 'package:recipe_app/shared/utils/web_fs_helper.dart';
 import '../../../ai_transcoder/presentation/providers/ai_providers.dart';
 import '../../../ai_transcoder/data/repositories/lm_studio_repository.dart';
-import '../../../recipes/data/repositories/smb_recipe_repository.dart';
+import '../../../recipes/data/repositories/http_recipe_repository.dart';
 import '../../../recipes/presentation/providers/recipe_providers.dart';
 
 import '../../../../features/voice/widgets/voice_commands_guide.dart';
@@ -24,15 +26,10 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late final TextEditingController _urlController;
   late final TextEditingController _presetController;
-  late final TextEditingController _smbHostController;
-  late final TextEditingController _smbShareController;
-  late final TextEditingController _smbUserController;
-  late final TextEditingController _smbPasswordController;
-  late final TextEditingController _smbDomainController;
-  late final TextEditingController _smbPathController;
+  late final TextEditingController _httpBridgeController;
   bool _testing = false;
-  bool _smbTesting = false;
-  String _smbStatus = '';
+  bool _httpTesting = false;
+  String _httpStatus = '';
   bool _modelLoaded = false;
 
   @override
@@ -41,24 +38,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final s = ref.read(settingsProvider);
     _urlController = TextEditingController(text: s.lmStudioUrl);
     _presetController = TextEditingController(text: s.lmPreset ?? '');
-    _smbHostController = TextEditingController(text: s.smbHost);
-    _smbShareController = TextEditingController(text: s.smbShare);
-    _smbUserController = TextEditingController(text: s.smbUser);
-    _smbPasswordController = TextEditingController(text: s.smbPassword);
-    _smbDomainController = TextEditingController(text: s.smbDomain);
-    _smbPathController = TextEditingController(text: s.smbPath);
+    _httpBridgeController = TextEditingController(text: s.httpBridgeUrl);
   }
 
   @override
   void dispose() {
     _urlController.dispose();
     _presetController.dispose();
-    _smbHostController.dispose();
-    _smbShareController.dispose();
-    _smbUserController.dispose();
-    _smbPasswordController.dispose();
-    _smbDomainController.dispose();
-    _smbPathController.dispose();
+    _httpBridgeController.dispose();
     super.dispose();
   }
 
@@ -134,58 +121,35 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  Future<void> _testSmbConnection() async {
-    final s = ref.read(settingsProvider);
-    if (s.smbHost.isEmpty || s.smbShare.isEmpty) {
-      setState(() => _smbStatus = 'Enter host and share name first');
+  Future<void> _testHttpBridge() async {
+    final url = _httpBridgeController.text.trim();
+    if (url.isEmpty) {
+      setState(() => _httpStatus = 'Enter bridge URL first');
       return;
     }
     setState(() {
-      _smbTesting = true;
-      _smbStatus = '';
+      _httpTesting = true;
+      _httpStatus = '';
     });
-    SmbRecipeRepository? repo;
     try {
-      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
-        final uncPath = '\\\\${s.smbHost}\\${s.smbShare}';
-        final userPart = s.smbDomain.isNotEmpty
-            ? '${s.smbDomain}\\${s.smbUser}'
-            : s.smbUser;
-        final result = await Process.run('net', [
-          'use', uncPath,
-          '/user:$userPart',
-          s.smbPassword,
-        ]);
-        if (result.exitCode == 0) {
-          ref.read(smbConnectRequestProvider.notifier).state++;
-          setState(() => _smbStatus = 'OK — connected via UNC');
-          return;
+      final repo = HttpRecipeRepository(url);
+      final ok = await repo.testConnection();
+      if (!mounted) return;
+      if (ok) {
+        final folders = await repo.listFolders();
+        setState(() => _httpStatus = 'OK — ${folders.length} folder(s) found');
+        ref.read(smbConnectRequestProvider.notifier).state++;
+        if (ref.read(settingsProvider).httpBridgeEnabled == false) {
+          await ref.read(settingsProvider.notifier).toggleHttpBridge();
         }
-        final netErr = (result.stderr as String?)?.trim() ?? 'exit ${result.exitCode}';
-        setState(() => _smbStatus = 'net use failed ($netErr), trying smb_connect...');
-      } else if (kIsWeb) {
-        setState(() => _smbStatus = 'SMB not supported on web');
-        return;
+        await ref.read(settingsProvider.notifier).updateHttpBridgeUrl(url);
+      } else {
+        setState(() => _httpStatus = 'No response — check URL, bridge must allow CORS and be running');
       }
-      repo = SmbRecipeRepository(
-        host: s.smbHost,
-        domain: s.smbDomain,
-        username: s.smbUser,
-        password: s.smbPassword,
-        share: s.smbShare,
-        subPath: s.smbPath,
-      );
-      await repo.connect(debugPrint: true);
-      final diag = await repo.diagnostics();
-      setState(() => _smbStatus = diag);
-      ref.read(smbConnectRequestProvider.notifier).state++;
     } catch (e) {
-      setState(() => _smbStatus = 'Connection failed: $e');
+      if (mounted) setState(() => _httpStatus = 'Failed: $e');
     } finally {
-      if (mounted) setState(() => _smbTesting = false);
-      try {
-        await repo?.dispose();
-      } catch (_) {}
+      if (mounted) setState(() => _httpTesting = false);
     }
   }
 
@@ -234,6 +198,77 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
+  Future<void> _pickRecipeFolder() async {
+    if (kIsWeb) {
+      if (isFileSystemAccessSupported) {
+        final handle = await WebFsHelper.pickDirectory();
+        if (handle == null) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No folder selected or browser denied access')),
+          );
+          return;
+        }
+        ref.read(webFsHandleRevisionProvider.notifier).state++;
+        ref.invalidate(recipeRepositoryProvider);
+        ref.invalidate(foldersProvider);
+        await ref.read(settingsProvider.notifier).updateDirectory(WebFsHelper.rootName ?? 'web-fs');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Using folder: ${WebFsHelper.rootName}')),
+          );
+        }
+        return;
+      }
+      _showManualPathDialog();
+      return;
+    }
+    final initial = ref.read(settingsProvider).recipeDirectory;
+    final isContentUri = initial.startsWith('content://');
+    String? result;
+    try {
+      result = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Select Recipe Folder',
+        initialDirectory: initial.isEmpty || isContentUri ? null : initial,
+        lockParentWindow: true,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open system picker: $e')),
+      );
+      return;
+    }
+    if (result == null) return;
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android && result.startsWith('content://')) {
+      await AndroidSafHelper.takePersistablePermission(result);
+      await AndroidSafHelper.listFiles(result);
+    }
+    await ref.read(settingsProvider.notifier).updateDirectory(result);
+  }
+
+  Future<void> _resetAllSettings() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Reset all settings?'),
+        content: const Text('Clears folder, network share, bridge and AI settings. Fixes frozen launch due to bad config.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Reset')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await ref.read(settingsProvider.notifier).resetAll();
+    ref.invalidate(recipeRepositoryProvider);
+    ref.invalidate(foldersProvider);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Settings reset')));
+      context.go('/');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
@@ -267,49 +302,36 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   title: Text(settings.recipeDirectory.isEmpty
                       ? 'Not set'
                       : settings.recipeDirectory),
-                  subtitle: Text(settings.smbEnabled && settings.recipeDirectory.isNotEmpty
-                      ? 'SMB share — recipes stored on network'
-                      : 'Folder containing recipe .md files'),
+                  subtitle: const Text('Tap to browse • long-press for manual path'),
                   leading: const Icon(Icons.folder_outlined),
-                  trailing: const Icon(Icons.edit),
-                  onTap: () async {
-                    if (settings.smbEnabled &&
-                        settings.smbHost.isNotEmpty &&
-                        settings.smbShare.isNotEmpty) {
-                      final unc = '\\\\${settings.smbHost}\\${settings.smbShare}';
-                      await ref.read(settingsProvider.notifier).updateDirectory(unc);
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('Directory set to SMB share: $unc'),
-                            duration: const Duration(seconds: 2),
-                          ),
-                        );
-                      }
-                      return;
-                    }
-                    if (kIsWeb) {
-                      _showManualPathDialog();
-                      return;
-                    }
-
-                    final result = await FilePicker.platform.getDirectoryPath();
-                    if (result == null) return;
-
-                    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android &&
-                        result.startsWith('content://')) {
-                      await AndroidSafHelper.takePersistablePermission(result);
-                      await AndroidSafHelper.listFiles(result);
-                    }
-
-                    await ref.read(settingsProvider.notifier).updateDirectory(result);
-                  },
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.folder_open),
+                        tooltip: 'Browse folders',
+                        onPressed: _pickRecipeFolder,
+                      ),
+                      const Icon(Icons.chevron_right, size: 18),
+                    ],
+                  ),
+                  onTap: _pickRecipeFolder,
+                  onLongPress: _showManualPathDialog,
                 ),
               ],
             ),
           ),
           const SizedBox(height: 16),
-          Card(
+          if (kIsWeb)
+            Card(
+              child: ListTile(
+                leading: Icon(Icons.info_outline, color: theme.colorScheme.primary),
+                title: const Text('Network Share on Web'),
+                subtitle: const Text('Pick a local folder or \\\\server\\share via the OS picker (Chrome/Edge on localhost/HTTPS). Otherwise recipes use browser storage.'),
+              ),
+            )
+          else
+            Card(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -325,114 +347,66 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     ],
                   ),
                 ),
+                ListTile(
+                  leading: const Icon(Icons.folder_shared),
+                  title: const Text('Network share'),
+                  subtitle: const Text('Pick via OS file picker: choose a local folder or \\\\server\\share directly. No manual host/share needed.'),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                  child: Row(
+                    children: [
+                      Icon(Icons.http, size: 20, color: theme.colorScheme.primary),
+                      const SizedBox(width: 8),
+                      Text('HTTP Bridge', style: theme.textTheme.titleMedium),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: kIsWeb ? theme.colorScheme.primaryContainer : theme.colorScheme.surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(kIsWeb ? 'Web' : 'Optional', style: theme.textTheme.labelSmall?.copyWith(color: kIsWeb ? theme.colorScheme.onPrimaryContainer : theme.colorScheme.onSurfaceVariant, fontWeight: FontWeight.w600)),
+                      ),
+                    ],
+                  ),
+                ),
                 SwitchListTile(
-                  title: const Text('Use network share'),
-                  subtitle: const Text('Access recipes via SMB/CIFS'),
-                  value: settings.smbEnabled,
+                  title: const Text('Use HTTP Bridge'),
+                  subtitle: Text(kIsWeb
+                      ? 'Required for web — browser cannot use SMB directly. Run bridge on your NAS/PC and enter its URL.'
+                      : 'Alternative to SMB/CIFS — works on all platforms including web via bridge.'),
+                  value: settings.httpBridgeEnabled,
                   onChanged: (_) async {
-                    await ref.read(settingsProvider.notifier).toggleSmb();
+                    await ref.read(settingsProvider.notifier).toggleHttpBridge();
                     ref.invalidate(recipeRepositoryProvider);
                   },
-                  secondary: const Icon(Icons.folder_shared),
+                  secondary: const Icon(Icons.language),
                 ),
-                if (settings.smbEnabled) ...[
+                if (settings.httpBridgeEnabled) ...[
                   ListTile(
                     title: TextField(
                       decoration: const InputDecoration(
-                        labelText: 'Host',
-                        hintText: '192.168.1.100',
+                        labelText: 'Bridge URL',
+                        hintText: 'http://192.168.1.100:8787',
                         border: OutlineInputBorder(),
                         isDense: true,
                       ),
-                      controller: _smbHostController,
+                      controller: _httpBridgeController,
+                      keyboardType: TextInputType.url,
                       onChanged: (v) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .updateSmbHost(v);
+                        await ref.read(settingsProvider.notifier).updateHttpBridgeUrl(v);
                       },
                     ),
-                    subtitle: const Text('Server IP or hostname'),
-                  ),
-                  ListTile(
-                    title: TextField(
-                      decoration: const InputDecoration(
-                        labelText: 'Share Name',
-                        hintText: 'recipes',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      controller: _smbShareController,
-                      onChanged: (v) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .updateSmbShare(v);
-                      },
-                    ),
-                    subtitle: const Text('SMB share containing recipe folders'),
-                  ),
-                  ListTile(
-                    title: TextField(
-                      decoration: const InputDecoration(
-                        labelText: 'Username',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      controller: _smbUserController,
-                      onChanged: (v) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .updateSmbUser(v);
-                      },
-                    ),
-                  ),
-                  ListTile(
-                    title: TextField(
-                      decoration: const InputDecoration(
-                        labelText: 'Password',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      controller: _smbPasswordController,
-                      obscureText: true,
-                      onChanged: (v) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .updateSmbPassword(v);
-                      },
-                    ),
-                  ),
-                  ListTile(
-                    title: TextField(
-                      decoration: const InputDecoration(
-                        labelText: 'Domain (optional)',
-                        hintText: 'WORKGROUP',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      controller: _smbDomainController,
-                      onChanged: (v) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .updateSmbDomain(v);
-                      },
-                    ),
-                  ),
-                  ListTile(
-                    title: TextField(
-                      decoration: const InputDecoration(
-                        labelText: 'Path (optional)',
-                        hintText: 'Recipes/Subfolder',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      controller: _smbPathController,
-                      onChanged: (v) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .updateSmbPath(v);
-                      },
-                    ),
-                    subtitle: const Text('Sub-path within the share'),
+                    subtitle: const Text('Bridge exposes recipe folders via HTTP. See bridge/README.'),
                   ),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -440,45 +414,43 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       children: [
                         Expanded(
                           child: OutlinedButton.icon(
-                            onPressed: _smbTesting ? null : () => _testSmbConnection(),
-                            icon: _smbTesting
-                                ? const SizedBox(
-                                    width: 16, height: 16,
-                                    child: CircularProgressIndicator(strokeWidth: 2),
-                                  )
+                            onPressed: _httpTesting ? null : () => _testHttpBridge(),
+                            icon: _httpTesting
+                                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                                 : const Icon(Icons.wifi_find, size: 18),
-                            label: Text(_smbTesting ? 'Connecting...' : 'Connect'),
+                            label: Text(_httpTesting ? 'Testing...' : 'Test Bridge'),
                           ),
                         ),
                       ],
                     ),
                   ),
-                  if (_smbStatus.isNotEmpty)
+                  if (_httpStatus.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                       child: Row(
                         children: [
-                          Icon(
-                            _smbStatus.startsWith('OK')
-                                ? Icons.check_circle
-                                : Icons.error,
-                            size: 16,
-                            color: _smbStatus.startsWith('OK')
-                                ? Colors.green
-                                : theme.colorScheme.error,
-                          ),
+                          Icon(_httpStatus.startsWith('OK') ? Icons.check_circle : Icons.error, size: 16, color: _httpStatus.startsWith('OK') ? Colors.green : theme.colorScheme.error),
                           const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              _smbStatus,
-                              style: theme.textTheme.bodySmall,
-                            ),
-                          ),
+                          Expanded(child: Text(_httpStatus, style: theme.textTheme.bodySmall)),
                         ],
                       ),
                     ),
-                  const Divider(height: 1),
-                  _SmbDiscoverySection(),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(color: theme.colorScheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(8)),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Row(children: [Icon(Icons.info_outline, size: 16, color: theme.colorScheme.primary), const SizedBox(width: 6), Text('How to run bridge', style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w600))]),
+                        const SizedBox(height: 6),
+                        Text('Web browsers block raw SMB (TCP 445). Run the companion bridge on the machine hosting your recipes:', style: theme.textTheme.bodySmall),
+                        const SizedBox(height: 6),
+                        SelectableText('  python bridge/server.py --dir /path/to/recipes --port 8787\n  # or: dart run bridge/server.dart', style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace', fontSize: 11)),
+                        const SizedBox(height: 6),
+                        Text('Then set Bridge URL above. Bridge handles SMB/network discovery server-side and serves recipes over HTTP with CORS.', style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                      ]),
+                    ),
+                  ),
                 ],
               ],
             ),
@@ -722,6 +694,39 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           Card(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                  child: Row(
+                    children: [
+                      Icon(Icons.bug_report_outlined, size: 20, color: theme.colorScheme.error),
+                      const SizedBox(width: 8),
+                      Text('Troubleshooting', style: theme.textTheme.titleMedium),
+                    ],
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.restart_alt),
+                  title: const Text('Reset all settings'),
+                  subtitle: const Text('Fix frozen launch due to bad config'),
+                  trailing: OutlinedButton(onPressed: _resetAllSettings, child: const Text('Reset')),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (kIsWeb)
+            Card(
+              child: ListTile(
+                leading: Icon(Icons.info_outline, color: theme.colorScheme.primary),
+                title: const Text('Voice Navigation not available on web'),
+                subtitle: const Text('On-device wake-word requires native build. Use Android/Windows.'),
+              ),
+            )
+          else
+            Card(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -775,113 +780,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _SmbDiscoverySection extends ConsumerStatefulWidget {
-  @override
-  ConsumerState<_SmbDiscoverySection> createState() => _SmbDiscoverySectionState();
-}
-
-class _SmbDiscoverySectionState extends ConsumerState<_SmbDiscoverySection> {
-  SmbDiscoveryNotifier? _discoveryNotifier;
-
-  @override
-  void initState() {
-    super.initState();
-    _discoveryNotifier = ref.read(smbDiscoveryProvider.notifier);
-  }
-
-  @override
-  void dispose() {
-    _discoveryNotifier?.stopScan();
-    _discoveryNotifier = null;
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final state = ref.watch(smbDiscoveryProvider);
-    final theme = Theme.of(context);
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            children: [
-              Icon(
-                state.isScanning ? Icons.wifi : Icons.wifi_off,
-                size: 16,
-                color: state.isScanning
-                    ? theme.colorScheme.primary
-                    : theme.colorScheme.onSurfaceVariant,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                state.isScanning ? 'Scanning network...' : 'Network scan',
-                style: theme.textTheme.labelMedium?.copyWith(
-                  color: state.isScanning
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const Spacer(),
-              if (!state.isScanning)
-                TextButton.icon(
-                  onPressed: () => _discoveryNotifier?.startScan(),
-                  icon: const Icon(Icons.search, size: 16),
-                  label: const Text('Scan'),
-                )
-              else
-                SizedBox(
-                  width: 14, height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-            ],
-          ),
-        ),
-        if (state.error != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Text(
-              state.error!,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.error,
-              ),
-            ),
-          ),
-        if (state.servers.isEmpty && !state.isScanning && state.error == null)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Text(
-              'No servers found. Try Test Connection with a known host.',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
-        ...state.servers.map((server) => ListTile(
-              dense: true,
-              leading: Icon(Icons.dns, size: 20, color: theme.colorScheme.primary),
-              title: Text(server.name, style: theme.textTheme.bodyMedium),
-              subtitle: Text('${server.host}:${server.port}',
-                  style: theme.textTheme.bodySmall),
-              trailing: Icon(Icons.add_circle_outline, size: 18,
-                  color: theme.colorScheme.primary),
-              onTap: () {
-                ref.read(settingsProvider.notifier).updateSmbHost(server.host);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('Host set to ${server.host}'),
-                    duration: const Duration(seconds: 2),
-                  ),
-                );
-              },
-            )),
-      ],
     );
   }
 }

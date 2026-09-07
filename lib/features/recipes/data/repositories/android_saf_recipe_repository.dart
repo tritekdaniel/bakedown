@@ -1,4 +1,3 @@
-import 'package:path/path.dart' as p;
 import 'package:recipe_app/shared/utils/android_saf_helper.dart';
 import '../models/recipe_model.dart';
 import 'recipe_repository.dart';
@@ -13,7 +12,12 @@ class AndroidSafRecipeRepository implements RecipeRepository {
 
   @override
   Future<List<String>> listFolders() async {
-    final files = await AndroidSafHelper.listFiles(treeUri);
+    return listSubfolders('');
+  }
+
+  @override
+  Future<List<String>> listSubfolders(String folder) async {
+    final files = await AndroidSafHelper.listFiles(treeUri, subDir: folder.isEmpty ? null : folder);
     return files
         .where((f) => f.isDirectory)
         .map((f) => f.name)
@@ -66,6 +70,6 @@ class AndroidSafRecipeRepository implements RecipeRepository {
 
   @override
   Future<String> imagePathFor(String folder, String fileName) async {
-    return p.join(treeUri, folder, fileName);
+    return '$treeUri/$folder/$fileName';
   }
 }

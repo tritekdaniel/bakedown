@@ -14,6 +14,8 @@ class AppConstants {
   static const String settingsKeySmbPassword = 'smb_password';
   static const String settingsKeySmbDomain = 'smb_domain';
   static const String settingsKeySmbPath = 'smb_path';
+  static const String settingsKeyHttpBridgeEnabled = 'http_bridge_enabled';
+  static const String settingsKeyHttpBridgeUrl = 'http_bridge_url';
   static const String settingsKeyVoiceEnabled = 'voice_enabled';
   static const String settingsKeyVoiceRequireWake = 'voice_require_wake';
   static const String settingsKeyVoicePauseFor = 'voice_pause_for';

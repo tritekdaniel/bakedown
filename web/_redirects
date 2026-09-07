@@ -1,0 +1,4 @@
+# SPA fallback for go_router (Flutter web)
+# Netlify / Cloudflare Pages / Firebase Hosting all need this
+# https://docs.netlify.com/routing/redirects/rewrites-proxies/#history-pushstate-and-single-page-apps
+/*    /index.html   200

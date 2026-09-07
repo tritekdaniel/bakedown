@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:recipe_app/app.dart';
@@ -30,15 +31,20 @@ class _VoiceDispatcherState extends ConsumerState<VoiceDispatcher> {
   }
 
   Future<void> _initVoice() async {
-    final tts = ref.read(ttsServiceProvider);
-    await tts.initialize();
-    final engine = ref.read(sherpaEngineProvider);
-    await engine.init();
-    _engineInitialized = true;
+    if (kIsWeb) return;
+    try {
+      final tts = ref.read(ttsServiceProvider);
+      await tts.initialize();
+      final engine = ref.read(sherpaEngineProvider);
+      await engine.init();
+      _engineInitialized = true;
 
-    final enabled = ref.read(voiceEnabledProvider);
-    if (enabled) {
-      ref.read(voiceListeningProvider.notifier).state = true;
+      final enabled = ref.read(voiceEnabledProvider);
+      if (enabled) {
+        ref.read(voiceListeningProvider.notifier).state = true;
+      }
+    } catch (_) {
+      _engineInitialized = false;
     }
   }
 
@@ -107,12 +113,12 @@ class _VoiceDispatcherState extends ConsumerState<VoiceDispatcher> {
         ref.read(scaleFactorProvider.notifier).state = factor;
         _showSnack('Scaled to $factor×');
       case ConvertUnit(:final unit):
-        ref.read(voiceCommandProvider.notifier).state = command;
         _showSnack('Convert to $unit');
+        break;
       case SwitchTab():
-        ref.read(voiceCommandProvider.notifier).state = command;
+        break;
       case ToggleCheckbox():
-        ref.read(voiceCommandProvider.notifier).state = command;
+        break;
       case SetTimer(:final seconds, :final label):
         ref.read(timerListProvider.notifier).addTimer(seconds, label: label);
         final display = label != null ? '$label ($seconds s)' : '$seconds s';

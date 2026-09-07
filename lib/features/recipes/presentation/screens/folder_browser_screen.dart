@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -5,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
 import '../../../../core/constants/app_constants.dart';
 import '../../../../shared/utils/android_saf_helper.dart';
+import '../../../../shared/utils/web_fs_helper.dart';
 import 'package:recipe_app/features/settings/domain/models/app_settings.dart';
 import 'package:recipe_app/features/settings/presentation/providers/settings_providers.dart';
 import '../../data/repositories/recipe_repository.dart';
@@ -20,6 +22,7 @@ class FolderBrowserScreen extends ConsumerStatefulWidget {
 
 class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
   late final TextEditingController _searchController;
+  Timer? _debounce;
 
   @override
   void initState() {
@@ -29,16 +32,68 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _searchController.dispose();
     super.dispose();
   }
+
+  void _onSearchChanged(String v) {
+    ref.read(recipeSearchQueryProvider.notifier).state = v;
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 300), () {
+      if (mounted) ref.read(debouncedSearchQueryProvider.notifier).state = v;
+    });
+  }
+
+  void _clearSearch() {
+    _debounce?.cancel();
+    _searchController.clear();
+    ref.read(recipeSearchQueryProvider.notifier).state = '';
+    ref.read(debouncedSearchQueryProvider.notifier).state = '';
+  }
   Future<void> _pickDirectory() async {
     if (kIsWeb) {
+      if (isFileSystemAccessSupported) {
+        final handle = await WebFsHelper.pickDirectory();
+        if (handle == null) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No folder selected or browser denied access')),
+          );
+          return;
+        }
+        ref.read(webFsHandleRevisionProvider.notifier).state++;
+        ref.invalidate(recipeRepositoryProvider);
+        ref.invalidate(foldersProvider);
+        await ref.read(settingsProvider.notifier).updateDirectory(WebFsHelper.rootName ?? 'web-fs');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Using folder: ${WebFsHelper.rootName}')),
+          );
+        }
+        return;
+      }
       _showManualPathDialog();
       return;
     }
 
-    final result = await FilePicker.platform.getDirectoryPath();
+    final initial = ref.read(settingsProvider).recipeDirectory;
+
+    final isContentUri = initial.startsWith('content://');
+    String? result;
+    try {
+      result = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Select Recipe Folder',
+        initialDirectory: initial.isEmpty || isContentUri ? null : initial,
+        lockParentWindow: true,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open system picker: $e')),
+      );
+      return;
+    }
     if (result == null) return;
 
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android &&
@@ -114,7 +169,43 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
       );
     }
 
-    if (!settings.smbEnabled && settings.recipeDirectory.isEmpty) {
+    if (kIsWeb && isFileSystemAccessSupported && !WebFsHelper.hasHandle) {
+      return Scaffold(
+        appBar: AppBar(title: const Text(AppConstants.appTitle)),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.folder_open, size: 80, color: theme.colorScheme.primary),
+              const SizedBox(height: 16),
+              Text('Choose a folder on disk',
+                  style: theme.textTheme.headlineSmall),
+              const SizedBox(height: 8),
+              Text(
+                'Pick a real folder via Chrome/Edge File System Access\n(files are stored on disk, not in browser storage)',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 24),
+              FilledButton.icon(
+                onPressed: _pickDirectory,
+                icon: const Icon(Icons.folder_open),
+                label: const Text('Pick Folder on Disk'),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Requires Chrome/Edge on localhost or HTTPS',
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (!kIsWeb && !settings.smbEnabled && settings.recipeDirectory.isEmpty) {
       return Scaffold(
         appBar: AppBar(title: const Text(AppConstants.appTitle)),
         body: Center(
@@ -177,12 +268,7 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
                 suffixIcon: searchQuery.isNotEmpty
                     ? IconButton(
                         icon: const Icon(Icons.clear, size: 18),
-                        onPressed: () {
-                          _searchController.clear();
-                          ref
-                              .read(recipeSearchQueryProvider.notifier)
-                              .state = '';
-                        },
+                        onPressed: _clearSearch,
                       )
                     : null,
                 border: OutlineInputBorder(
@@ -191,9 +277,7 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
                 contentPadding: const EdgeInsets.symmetric(vertical: 8),
                 isDense: true,
               ),
-              onChanged: (v) {
-                ref.read(recipeSearchQueryProvider.notifier).state = v;
-              },
+              onChanged: _onSearchChanged,
             ),
           ),
           Expanded(
@@ -247,7 +331,7 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
                     color: theme.colorScheme.onSurfaceVariant),
                 onTap: () {
                   ref.read(currentFolderProvider.notifier).state = r.folder;
-                  context.push('/folder/${r.folder}');
+                  context.push('/folder/${Uri.encodeComponent(r.folder)}');
                 },
               ),
             );
@@ -257,11 +341,49 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
     );
   }
 
+  Future<void> _resetSettings() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Reset settings?'),
+        content: const Text('This clears the saved folder, network share and bridge config (fixes bad config). You can re-select your folder after.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Reset')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await ref.read(settingsProvider.notifier).resetAll();
+    ref.invalidate(recipeRepositoryProvider);
+    ref.invalidate(foldersProvider);
+    ref.read(currentFolderProvider.notifier).state = '';
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Settings reset — pick your folder again')));
+  }
+
   Widget _buildFolderList(bool isLoading, RecipeRepository? repo,
       AppSettings settings, List<String> folders, ThemeData theme,
       Future<void> Function() refresh) {
     if (isLoading) {
-      return const Center(child: CircularProgressIndicator());
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            Text('Loading folders…', style: theme.textTheme.bodyMedium),
+            const SizedBox(height: 24),
+            TextButton.icon(
+              onPressed: _resetSettings,
+              icon: const Icon(Icons.restart_alt, size: 18),
+              label: const Text('Frozen? Reset settings'),
+            ),
+            const SizedBox(height: 8),
+            Text('Bad config from a previous build can freeze on launch',
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+          ],
+        ),
+      );
     }
     if (repo == null) {
       return Center(
@@ -286,6 +408,12 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
                     onPressed: () => context.push('/settings'),
                     icon: const Icon(Icons.settings),
                     label: const Text('Open Settings'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton.icon(
+                    onPressed: _resetSettings,
+                    icon: const Icon(Icons.restart_alt, size: 16),
+                    label: const Text('Reset settings'),
                   ),
                 ],
               )
@@ -312,6 +440,12 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
                     onPressed: _pickDirectory,
                     icon: const Icon(Icons.folder_open),
                     label: const Text('Reselect Folder'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton.icon(
+                    onPressed: _resetSettings,
+                    icon: const Icon(Icons.restart_alt, size: 16),
+                    label: const Text('Reset settings'),
                   ),
                 ],
               ),
@@ -399,7 +533,7 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
                 ref
                     .read(currentFolderProvider.notifier)
                     .state = folder;
-                context.push('/folder/$folder');
+                context.push('/folder/${Uri.encodeComponent(folder)}');
               },
             ),
           );

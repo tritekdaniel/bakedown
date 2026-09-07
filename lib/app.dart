@@ -41,7 +41,9 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                     path: 'folder/:folder',
                     pageBuilder: (context, state) => CustomTransitionPage(
                       key: state.pageKey,
-                      child: const RecipeListScreen(),
+                      child: RecipeListScreen(
+                        initialFolder: Uri.decodeComponent(state.pathParameters['folder']!),
+                      ),
                       transitionsBuilder: (context, animation, secondaryAnimation, child) {
                         return SharedAxisTransition(
                           animation: animation,
@@ -57,8 +59,8 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                         pageBuilder: (context, state) => CustomTransitionPage(
                           key: state.pageKey,
                           child: RecipeScreen(
-                            folder: state.pathParameters['folder']!,
-                            filename: state.pathParameters['filename']!,
+                            folder: Uri.decodeComponent(state.pathParameters['folder']!),
+                            filename: Uri.decodeComponent(state.pathParameters['filename']!),
                           ),
                           transitionsBuilder: (context, animation, secondaryAnimation, child) {
                             return SharedAxisTransition(
@@ -126,14 +128,14 @@ class RecipeApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final settings = ref.watch(settingsProvider);
+    final darkMode = ref.watch(settingsProvider.select((s) => s.darkMode));
     final router = ref.watch(goRouterProvider);
 
     return MaterialApp.router(
       title: 'Bakedown',
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
-      themeMode: settings.darkMode ? ThemeMode.dark : ThemeMode.light,
+      themeMode: darkMode ? ThemeMode.dark : ThemeMode.light,
       routerConfig: router,
       builder: (context, child) => VoiceDispatcher(child: child!),
       debugShowCheckedModeBanner: false,

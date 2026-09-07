@@ -16,6 +16,8 @@ class AppSettings {
   final bool voiceRequireWakePrefix;
   final String defaultTimerSound;
   final bool aiEnabled;
+  final bool httpBridgeEnabled;
+  final String httpBridgeUrl;
   final bool isLoaded;
 
   const AppSettings({
@@ -36,6 +38,8 @@ class AppSettings {
     this.voiceRequireWakePrefix = false,
     this.defaultTimerSound = 'audio/Helium.mp3',
     this.aiEnabled = true,
+    this.httpBridgeEnabled = false,
+    this.httpBridgeUrl = '',
     this.isLoaded = false,
   });
 
@@ -44,8 +48,8 @@ class AppSettings {
     String? lmStudioUrl,
     bool? keepScreenOn,
     bool? darkMode,
-    String? selectedModel,
-    String? lmPreset,
+    Object? selectedModel = const Object(),
+    Object? lmPreset = const Object(),
     bool? smbEnabled,
     String? smbHost,
     String? smbShare,
@@ -57,6 +61,8 @@ class AppSettings {
     bool? voiceRequireWakePrefix,
     String? defaultTimerSound,
     bool? aiEnabled,
+    bool? httpBridgeEnabled,
+    String? httpBridgeUrl,
     bool? isLoaded,
   }) {
     return AppSettings(
@@ -64,8 +70,8 @@ class AppSettings {
       lmStudioUrl: lmStudioUrl ?? this.lmStudioUrl,
       keepScreenOn: keepScreenOn ?? this.keepScreenOn,
       darkMode: darkMode ?? this.darkMode,
-      selectedModel: selectedModel ?? this.selectedModel,
-      lmPreset: lmPreset ?? this.lmPreset,
+      selectedModel: selectedModel is String? ? selectedModel : this.selectedModel,
+      lmPreset: lmPreset is String? ? lmPreset : this.lmPreset,
       smbEnabled: smbEnabled ?? this.smbEnabled,
       smbHost: smbHost ?? this.smbHost,
       smbShare: smbShare ?? this.smbShare,
@@ -77,6 +83,8 @@ class AppSettings {
       voiceRequireWakePrefix: voiceRequireWakePrefix ?? this.voiceRequireWakePrefix,
       defaultTimerSound: defaultTimerSound ?? this.defaultTimerSound,
       aiEnabled: aiEnabled ?? this.aiEnabled,
+      httpBridgeEnabled: httpBridgeEnabled ?? this.httpBridgeEnabled,
+      httpBridgeUrl: httpBridgeUrl ?? this.httpBridgeUrl,
       isLoaded: isLoaded ?? this.isLoaded,
     );
   }

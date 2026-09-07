@@ -1,9 +1,10 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:recipe_app/core/constants/app_constants.dart';
 import '../../data/repositories/settings_repository.dart';
-import '../../data/repositories/smb_discovery_repository.dart';
+import '../../data/repositories/http_discovery_repository.dart';
 import '../../domain/models/app_settings.dart';
 import '../../domain/models/discovered_server.dart';
 
@@ -19,11 +20,14 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
   Future<void> load() async {
     final settings = await _repo.load();
     state = settings.copyWith(isLoaded: true);
-    if (settings.keepScreenOn) {
-      await WakelockPlus.enable();
-    } else {
-      await WakelockPlus.disable();
-    }
+    if (kIsWeb) return;
+    try {
+      if (settings.keepScreenOn) {
+        await WakelockPlus.enable();
+      } else {
+        await WakelockPlus.disable();
+      }
+    } catch (_) {}
   }
 
   Future<void> updateDirectory(String path) async {
@@ -39,10 +43,14 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
   Future<void> toggleKeepScreenOn() async {
     final newVal = !state.keepScreenOn;
     state = state.copyWith(keepScreenOn: newVal);
-    if (newVal) {
-      await WakelockPlus.enable();
-    } else {
-      await WakelockPlus.disable();
+    if (!kIsWeb) {
+      try {
+        if (newVal) {
+          await WakelockPlus.enable();
+        } else {
+          await WakelockPlus.disable();
+        }
+      } catch (_) {}
     }
     await _repo.save(state);
   }
@@ -116,6 +124,22 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
     state = state.copyWith(aiEnabled: !state.aiEnabled);
     await _repo.save(state);
   }
+
+  Future<void> toggleHttpBridge() async {
+    state = state.copyWith(httpBridgeEnabled: !state.httpBridgeEnabled);
+    await _repo.save(state);
+  }
+
+  Future<void> updateHttpBridgeUrl(String url) async {
+    state = state.copyWith(httpBridgeUrl: AppConstants.normalizeUrl(url));
+    await _repo.save(state);
+  }
+
+  Future<void> resetAll() async {
+    await _repo.clearAll();
+    state = const AppSettings(isLoaded: true);
+    await _repo.save(state);
+  }
 }
 
 final settingsProvider =
@@ -153,51 +177,56 @@ class SmbDiscoveryState {
 }
 
 class SmbDiscoveryNotifier extends StateNotifier<SmbDiscoveryState> {
-  final SmbDiscoveryRepository _repo = SmbDiscoveryRepository();
+  final HttpDiscoveryRepository _httpRepo = HttpDiscoveryRepository();
+  final Ref _ref;
   bool _disposed = false;
 
-  SmbDiscoveryNotifier() : super(const SmbDiscoveryState());
+  SmbDiscoveryNotifier(this._ref) : super(const SmbDiscoveryState());
 
   Future<void> startScan() async {
     if (_disposed) return;
-    state = state.copyWith(isScanning: true, error: null);
+    state = state.copyWith(isScanning: true, error: null, servers: []);
     try {
-      final initial = await _repo.startScan(
-        onChanged: (server, added) {
+      final settings = _ref.read(settingsProvider);
+      final bridgeUrl = settings.httpBridgeUrl;
+      if (bridgeUrl.isNotEmpty) {
+        final servers = await _httpRepo.discoverViaBridge(bridgeUrl);
+        if (servers.isNotEmpty) {
           if (_disposed) return;
-          final list = List<DiscoveredServer>.from(state.servers);
-          if (added) {
-            if (!list.any((s) => s.host == server.host)) {
-              list.add(server);
-            }
-          } else {
-            list.removeWhere((s) => s.host == server.host);
-          }
-          if (_disposed) return;
-          state = state.copyWith(servers: list);
-        },
-      );
+          state = state.copyWith(isScanning: false, servers: servers);
+          return;
+        }
+      }
+      final bridges = await _httpRepo.scanCommonBridges();
+      if (bridges.isNotEmpty) {
+        if (_disposed) return;
+        state = state.copyWith(isScanning: false, servers: bridges);
+        return;
+      }
       if (_disposed) return;
-      state = state.copyWith(isScanning: false, servers: initial);
+      if (kIsWeb) {
+        state = state.copyWith(isScanning: false, error: 'No bridge found. Configure HTTP Bridge URL (e.g. http://192.168.1.100:8787). On web, pick a folder directly via the OS picker — no SMB config needed.');
+      } else {
+        state = state.copyWith(isScanning: false, error: 'No bridge found. On desktop/mobile, just pick a folder (local or \\server\\share) via the OS file picker — no SMB config needed.');
+      }
     } catch (e) {
       if (_disposed) return;
       state = state.copyWith(isScanning: false, error: e.toString());
     }
   }
 
-  void stopScan() {
-    _repo.stopScan();
-  }
+  Future<List<String>> browseSharesFor(String host) async => [];
+
+  void stopScan() {}
 
   @override
   void dispose() {
     _disposed = true;
-    _repo.dispose();
     super.dispose();
   }
 }
 
 final smbDiscoveryProvider = StateNotifierProvider.autoDispose<
     SmbDiscoveryNotifier, SmbDiscoveryState>((ref) {
-  return SmbDiscoveryNotifier();
+  return SmbDiscoveryNotifier(ref);
 });

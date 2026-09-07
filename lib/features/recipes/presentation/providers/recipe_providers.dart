@@ -1,116 +1,65 @@
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/repositories/recipe_repository.dart';
 import '../../data/repositories/android_saf_recipe_repository.dart';
-import '../../data/repositories/smb_recipe_repository.dart';
+import '../../data/repositories/web_recipe_repository.dart';
+import '../../data/repositories/web_fs_recipe_repository.dart';
+import '../../data/repositories/http_recipe_repository.dart';
+import 'package:recipe_app/shared/utils/web_fs_helper.dart';
 import '../../data/models/recipe_model.dart';
 import 'package:recipe_app/features/settings/presentation/providers/settings_providers.dart';
 import 'package:recipe_app/shared/utils/android_saf_helper.dart';
 
 final smbConnectRequestProvider = StateProvider<int>((ref) => 0);
 
-final _smbAutoConnectedProvider = StateProvider<bool>((ref) => false);
+final webFsHandleRevisionProvider = StateProvider<int>((ref) => 0);
 
 final recipeRepositoryProvider = FutureProvider<RecipeRepository?>((ref) async {
   ref.watch(smbConnectRequestProvider);
-  ref.watch(settingsProvider);
-  final settings = ref.read(settingsProvider);
+  ref.watch(webFsHandleRevisionProvider);
+  final httpBridgeEnabled = ref.watch(settingsProvider.select((s) => s.httpBridgeEnabled));
+  final httpBridgeUrl = ref.watch(settingsProvider.select((s) => s.httpBridgeUrl));
+  final recipeDirectory = ref.watch(settingsProvider.select((s) => s.recipeDirectory));
 
-  if (!settings.smbEnabled) {
-    if (settings.recipeDirectory.isEmpty) return null;
-    final dir = settings.recipeDirectory;
-    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android &&
-        dir.startsWith('content://')) {
-      try {
-        await AndroidSafHelper.takePersistablePermission(dir);
-        return AndroidSafRecipeRepository(dir);
-      } catch (_) {
-        return null;
-      }
-    }
-    return LocalRecipeRepository(dir);
+  if (httpBridgeEnabled && httpBridgeUrl.isNotEmpty) {
+    return HttpRecipeRepository(httpBridgeUrl);
   }
 
-  if (settings.smbHost.isEmpty || settings.smbShare.isEmpty) return null;
-
-  final trigger = ref.read(smbConnectRequestProvider);
-  if (trigger == 0) {
-    final autoConnected = ref.read(_smbAutoConnectedProvider);
-    if (!autoConnected &&
-        settings.smbHost.isNotEmpty &&
-        settings.smbShare.isNotEmpty) {
-      Future.microtask(() {
-        ref.read(_smbAutoConnectedProvider.notifier).state = true;
-        ref.read(smbConnectRequestProvider.notifier).state++;
-      });
+  if (kIsWeb) {
+    if (WebFsHelper.hasHandle) {
+      return WebFsRecipeRepository();
     }
-    return null;
+    if (isFileSystemAccessSupported) {
+      return null;
+    }
+    return WebRecipeRepository();
   }
 
-  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
-    final uncPath = '\\\\${settings.smbHost}\\${settings.smbShare}';
-    final userPart = settings.smbDomain.isNotEmpty
-        ? '${settings.smbDomain}\\${settings.smbUser}'
-        : settings.smbUser;
+  if (recipeDirectory.isEmpty) return null;
+  final dir = recipeDirectory;
+  if (defaultTargetPlatform == TargetPlatform.android && dir.startsWith('content://')) {
     try {
-      final result = await Process.run('net', [
-        'use', uncPath,
-        '/user:$userPart',
-        settings.smbPassword,
-      ]);
-      if (result.exitCode != 0) {
-        final stderr = (result.stderr as String?)?.trim() ?? '';
-        throw Exception('net use failed ($stderr)');
-      }
-    } catch (_) {
-      final repo = SmbRecipeRepository(
-        host: settings.smbHost,
-        domain: settings.smbDomain,
-        username: settings.smbUser,
-        password: settings.smbPassword,
-        share: settings.smbShare,
-        subPath: settings.smbPath,
-      );
-      try {
-        await repo.connect(debugPrint: kDebugMode);
-        return repo;
-      } catch (_) {
-        return null;
-      }
-    }
-    return LocalRecipeRepository(uncPath);
-  }
-
-  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-    try {
-      final repo = SmbRecipeRepository(
-        host: settings.smbHost,
-        domain: settings.smbDomain,
-        username: settings.smbUser,
-        password: settings.smbPassword,
-        share: settings.smbShare,
-        subPath: settings.smbPath,
-      );
-      await repo.connect(debugPrint: kDebugMode);
-      ref.onDispose(() async {
-        try {
-          await repo.dispose();
-        } catch (_) {}
-      });
-      return repo;
+      await AndroidSafHelper.takePersistablePermission(dir);
+      return AndroidSafRecipeRepository(dir);
     } catch (_) {
       return null;
     }
   }
-
-  return null;
+  return LocalRecipeRepository(dir);
 });
 
 final foldersProvider = FutureProvider<List<String>>((ref) async {
-  final repo = ref.watch(recipeRepositoryProvider).valueOrNull;
+  ref.watch(refreshCounterProvider);
+  final repo = await ref.watch(recipeRepositoryProvider.future);
   if (repo == null) return [];
   return repo.listFolders();
+});
+
+final subfoldersProvider = FutureProvider.family<List<String>, String>((ref, folder) async {
+  ref.watch(refreshCounterProvider);
+  final repo = await ref.watch(recipeRepositoryProvider.future);
+  if (repo == null) return [];
+  return repo.listSubfolders(folder);
 });
 
 final currentFolderProvider = StateProvider<String>((ref) => '');
@@ -119,7 +68,7 @@ final refreshCounterProvider = StateProvider<int>((ref) => 0);
 
 final recipesInFolderProvider = FutureProvider<List<RecipeModel>>((ref) async {
   ref.watch(refreshCounterProvider);
-  final repo = ref.watch(recipeRepositoryProvider).valueOrNull;
+  final repo = await ref.watch(recipeRepositoryProvider.future);
   final folder = ref.watch(currentFolderProvider);
   if (repo == null || folder.isEmpty) return [];
   return repo.listRecipes(folder);
@@ -131,20 +80,57 @@ final recipeContentProvider = StateProvider<String>((ref) => '');
 
 final recipeSearchQueryProvider = StateProvider<String>((ref) => '');
 
+final debouncedSearchQueryProvider = StateProvider<String>((ref) => '');
+
 final allRecipesProvider = FutureProvider<List<RecipeModel>>((ref) async {
-  final repo = ref.watch(recipeRepositoryProvider).valueOrNull;
-  if (repo == null) return [];
-  final folders = await repo.listFolders();
-  final results = await Future.wait(
-    folders.map((f) => repo.listRecipes(f)),
-  );
-  return results.expand((r) => r).toList();
+  try {
+    final repo = await ref.watch(recipeRepositoryProvider.future);
+    if (repo == null) return [];
+    ref.watch(refreshCounterProvider);
+    Future<List<String>> collectAllFolders(String parent) async {
+      try {
+        final subs = await repo.listSubfolders(parent);
+        if (subs.isEmpty) return [];
+        final deeperLists = await Future.wait(subs.map((s) async {
+          final full = parent.isEmpty ? s : '$parent/$s';
+          try {
+            final deeper = await collectAllFolders(full);
+            return [full, ...deeper];
+          } catch (e) {
+            debugPrint('[ALL_RECIPES] collect $full failed: $e');
+            return [full];
+          }
+        }));
+        return deeperLists.expand((l) => l).toList();
+      } catch (e) {
+        debugPrint('[ALL_RECIPES] listSubfolders $parent failed: $e');
+        return [];
+      }
+    }
+
+    final allFolders = await collectAllFolders('');
+    if (allFolders.isEmpty) return [];
+    final results = await Future.wait(
+      allFolders.map((f) async {
+        try {
+          return await repo.listRecipes(f);
+        } catch (e) {
+          debugPrint('[ALL_RECIPES] listRecipes $f failed: $e');
+          return <RecipeModel>[];
+        }
+      }),
+    );
+    return results.expand((r) => r).toList();
+  } catch (e, st) {
+    debugPrint('[ALL_RECIPES] fatal $e $st');
+    return [];
+  }
 });
 
 final filteredRecipesProvider = Provider<AsyncValue<List<RecipeModel>>>((ref) {
+  final query = ref.watch(debouncedSearchQueryProvider).trim().toLowerCase();
+  if (query.isEmpty) return const AsyncValue.data([]);
   final allAsync = ref.watch(allRecipesProvider);
-  final query = ref.watch(recipeSearchQueryProvider).trim().toLowerCase();
-  if (query.isEmpty) return allAsync;
   return allAsync.whenData((recipes) => recipes.where((r) {
     final title = r.title.toLowerCase();
     final tags = r.tags.map((t) => t.toLowerCase());
@@ -212,13 +198,15 @@ final recipeSectionsProvider = Provider<Map<String, List<String>>>((ref) {
   return _parseRecipeSections(content);
 });
 
+final _headingSplitRe = RegExp(r'^##\s+(.+)$', multiLine: true);
+
 Map<String, List<String>> _parseRecipeSections(String markdown) {
   final result = <String, List<String>>{};
   String? currentSection;
   final ingredients = <String>[];
   final instructions = <String>[];
   final other = <String>[];
-  final headingRe = RegExp(r'^##\s+(.+)$', multiLine: true);
+  final headingRe = _headingSplitRe;
 
   final lines = markdown.split('\n');
   for (final line in lines) {
@@ -230,12 +218,12 @@ Map<String, List<String>> _parseRecipeSections(String markdown) {
     if (currentSection == null) continue;
     if (line.trim().isEmpty) continue;
 
-    if (currentSection!.contains('ingredient')) {
+    if (currentSection.contains('ingredient')) {
       ingredients.add(line);
-    } else if (currentSection!.contains('instruction') ||
-        currentSection!.contains('direction') ||
-        currentSection!.contains('steps') ||
-        currentSection!.contains('method')) {
+    } else if (currentSection.contains('instruction') ||
+        currentSection.contains('direction') ||
+        currentSection.contains('steps') ||
+        currentSection.contains('method')) {
       instructions.add(line);
     } else {
       other.add(line);

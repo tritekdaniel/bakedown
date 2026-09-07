@@ -1,0 +1,26 @@
+# Netlify / Cloudflare Pages / Firebase Hosting headers
+# See: https://docs.netlify.com/routing/headers/ and https://firebase.google.com/docs/hosting/full-config#headers
+# This file is read by Netlify & Cloudflare Pages. For Firebase, see firebase.json headers.
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/canvaskit/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/*.js
+  Cache-Control: public, max-age=31536000, immutable
+
+/*.wasm
+  Cache-Control: public, max-age=31536000, immutable
+  Content-Type: application/wasm
+
+/manifest.json
+  Cache-Control: public, max-age=3600
+
+/index.html
+  Cache-Control: no-cache
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: SAMEORIGIN
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(self), microphone=(self)

@@ -52,7 +52,10 @@ class _RecipeScreenState extends ConsumerState<RecipeScreen>
   Future<void> _loadRecipe() async {
     _clearSession();
     final repo = ref.read(recipeRepositoryProvider).valueOrNull;
-    if (repo == null) return;
+    if (repo == null) {
+      ref.read(currentRecipeProvider.notifier).state = null;
+      return;
+    }
     final content = await repo.readFile(widget.folder, widget.filename);
     if (content != null) {
       final recipe = RecipeModel.fromMarkdown(
@@ -62,6 +65,8 @@ class _RecipeScreenState extends ConsumerState<RecipeScreen>
       );
       ref.read(currentRecipeProvider.notifier).state = recipe;
       ref.read(recipeContentProvider.notifier).state = content;
+    } else {
+      ref.read(currentRecipeProvider.notifier).state = null;
     }
   }
 
@@ -91,7 +96,7 @@ class _RecipeScreenState extends ConsumerState<RecipeScreen>
     final content = ref.read(recipeContentProvider);
     final edits = ref.read(memoryEditsProvider);
     final factor = ref.read(scaleFactorProvider);
-    final checkboxRe = RegExp(r'^(- \[[ x]\] )(.*)$');
+    final checkboxRe = RegExp(r'^(- \[[ xX]\] )(.*)$');
 
     final lines = content.split('\n');
     final updated = lines.map((line) {
@@ -125,7 +130,7 @@ class _RecipeScreenState extends ConsumerState<RecipeScreen>
     final content = ref.read(recipeContentProvider);
     if (content.isEmpty) return;
     final lines = content.split('\n');
-    final checkboxRe = RegExp(r'^- \[([ x])\] ');
+    final checkboxRe = RegExp(r'^- \[([ xX])\] ');
     var found = 0;
     for (var i = 0; i < lines.length; i++) {
       final m = checkboxRe.firstMatch(lines[i]);

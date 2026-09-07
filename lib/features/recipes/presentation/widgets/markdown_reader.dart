@@ -1,4 +1,5 @@
-import 'dart:io';
+import 'dart:io' if (dart.library.html) 'package:recipe_app/shared/stubs/io_stub.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -54,6 +55,9 @@ class MarkdownReader extends ConsumerStatefulWidget {
   ConsumerState<MarkdownReader> createState() => _MarkdownReaderState();
 }
 
+final _checkboxLineRe = RegExp(r'^- \[([ xX])\] (.+)$');
+final _h2Re = RegExp(r'^## ');
+
 class _MarkdownReaderState extends ConsumerState<MarkdownReader> {
   final Map<String, bool> _checkboxStates = {};
 
@@ -74,10 +78,10 @@ class _MarkdownReaderState extends ConsumerState<MarkdownReader> {
 
   void _initCheckboxes() {
     for (final line in widget.recipe.rawBody.split('\n')) {
-      final match = RegExp(r'^- \[([ x])\] (.+)$').firstMatch(line);
+      final match = _checkboxLineRe.firstMatch(line);
       if (match != null) {
         final key = match.group(2)!.trim();
-        _checkboxStates[key] = match.group(1) == 'x';
+        _checkboxStates[key] = match.group(1)!.toLowerCase() == 'x';
       }
     }
   }
@@ -171,12 +175,12 @@ class _MarkdownReaderState extends ConsumerState<MarkdownReader> {
       final otherLines = <String>[];
 
       for (final line in section.lines) {
-        final match = RegExp(r'^- \[([ x])\] (.+)$').firstMatch(line);
+        final match = _checkboxLineRe.firstMatch(line);
         if (match != null) {
           checkboxLines.add(_CheckboxLine(
             key: match.group(2)!.trim(),
             originalText: match.group(2)!.trim(),
-            initialChecked: match.group(1) == 'x',
+            initialChecked: match.group(1)!.toLowerCase() == 'x',
           ));
         } else {
           otherLines.add(line);
@@ -406,7 +410,7 @@ class _MarkdownReaderState extends ConsumerState<MarkdownReader> {
     var currentLines = <String>[];
 
     for (final line in lines) {
-      if (RegExp(r'^## ').hasMatch(line)) {
+      if (_h2Re.hasMatch(line)) {
         if (currentHeader.isNotEmpty || currentLines.isNotEmpty) {
           sections.add(_Section(header: currentHeader, lines: List.from(currentLines)));
         }
@@ -504,10 +508,16 @@ class _MetadataRow extends StatelessWidget {
         if (recipe.tags.isNotEmpty) ...[
           if (items.isNotEmpty || recipe.difficulty?.isNotEmpty == true)
             const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: recipe.tags.map((t) => _TagChip(label: t)).toList(),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: recipe.tags
+                  .map((t) => Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: _TagChip(label: t),
+                      ))
+                  .toList(),
+            ),
           ),
         ],
       ],
@@ -644,16 +654,64 @@ class _TagChip extends StatelessWidget {
   }
 }
 
-class _AttachedImages extends StatelessWidget {
+class _AttachedImages extends StatefulWidget {
   final RecipeModel recipe;
   final String rootPath;
   final Future<String> Function(String folder, String fileName)? imagePathFor;
 
   const _AttachedImages({
+    super.key,
     required this.recipe,
     this.rootPath = '',
     this.imagePathFor,
   });
+
+  @override
+  State<_AttachedImages> createState() => _AttachedImagesState();
+}
+
+class _AttachedImagesState extends State<_AttachedImages> {
+  late Future<List<String>> _pathsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _initFuture();
+  }
+
+  @override
+  void didUpdateWidget(covariant _AttachedImages oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.recipe != widget.recipe || oldWidget.imagePathFor != widget.imagePathFor) {
+      _initFuture();
+    }
+  }
+
+  void _initFuture() {
+    if (widget.imagePathFor != null) {
+      final folder = widget.recipe.folder;
+      final images = widget.recipe.images;
+      _pathsFuture = Future.wait(images.map((img) => widget.imagePathFor!(folder, img)));
+    } else {
+      _pathsFuture = Future.value([]);
+    }
+  }
+
+  Widget _buildImageWidget(String imagePath, BoxFit fit) {
+    if (imagePath.startsWith('data:') || imagePath.startsWith('blob:') || imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+      return Image.network(imagePath, fit: fit,
+          errorBuilder: (c, e, s) => const Icon(Icons.broken_image));
+    }
+    if (kIsWeb) {
+      if (imagePath.startsWith('http')) {
+        return Image.network(imagePath, fit: fit,
+            errorBuilder: (c, e, s) => const Icon(Icons.broken_image));
+      }
+      return const Icon(Icons.broken_image);
+    }
+    return Image.file(File(imagePath) as dynamic, fit: fit,
+        errorBuilder: (c, e, s) => const Icon(Icons.broken_image));
+  }
 
   void _showFullScreenImage(BuildContext context, String imagePath) {
     final cs = Theme.of(context).colorScheme;
@@ -672,7 +730,7 @@ class _AttachedImages extends StatelessWidget {
               panEnabled: true,
               minScale: 0.5,
               maxScale: 4.0,
-              child: Image.file(File(imagePath), fit: BoxFit.contain),
+              child: _buildImageWidget(imagePath, BoxFit.contain),
             ),
           ),
         ),
@@ -683,18 +741,17 @@ class _AttachedImages extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final folder = recipe.folder;
-    final images = recipe.images;
+    final folder = widget.recipe.folder;
+    final images = widget.recipe.images;
 
-    if (imagePathFor != null) {
-      final futures = images.map((img) => imagePathFor!(folder, img)).toList();
+    if (widget.imagePathFor != null) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('Attached Images', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 8),
           FutureBuilder<List<String>>(
-            future: Future.wait(futures),
+            future: _pathsFuture,
             builder: (context, snapshot) {
               final paths = snapshot.data ?? [];
               return Wrap(
@@ -719,14 +776,7 @@ class _AttachedImages extends StatelessWidget {
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(7),
                         child: imagePath != null
-                            ? Image.file(
-                                File(imagePath),
-                                fit: BoxFit.cover,
-                                errorBuilder: (context, error, stackTrace) => Container(
-                                  color: theme.colorScheme.surfaceContainerHighest,
-                                  child: Icon(Icons.broken_image, color: theme.colorScheme.onSurfaceVariant),
-                                ),
-                              )
+                            ? _buildImageWidget(imagePath, BoxFit.cover)
                             : Container(
                                 color: theme.colorScheme.surfaceContainerHighest,
                                 child: Icon(Icons.broken_image, color: theme.colorScheme.onSurfaceVariant),
@@ -751,7 +801,7 @@ class _AttachedImages extends StatelessWidget {
           spacing: 8,
           runSpacing: 8,
           children: images.map((img) {
-            final imagePath = p.join(rootPath, folder, img);
+            final imagePath = p.join(widget.rootPath, folder, img);
             return GestureDetector(
               onTap: () => _showFullScreenImage(context, imagePath),
               child: Container(
@@ -764,14 +814,7 @@ class _AttachedImages extends StatelessWidget {
                 ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(7),
-                  child: Image.file(
-                    File(imagePath),
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) => Container(
-                      color: theme.colorScheme.surfaceContainerHighest,
-                      child: Icon(Icons.broken_image, color: theme.colorScheme.onSurfaceVariant),
-                    ),
-                  ),
+                  child: _buildImageWidget(imagePath, BoxFit.cover),
                 ),
               ),
             );

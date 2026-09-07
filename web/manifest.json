@@ -3,10 +3,10 @@
     "short_name": "Bakedown",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
+    "background_color": "#FFF8F0",
+    "theme_color": "#E85D04",
+    "description": "Bakedown — Recipe database and reader with AI transcoding. MD files, folders, and offline PWA support.",
+    "orientation": "any",
     "prefer_related_applications": false,
     "icons": [
         {

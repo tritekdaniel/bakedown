@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:recipe_app/features/timer/domain/models/timer_model.dart';
 
@@ -116,7 +117,7 @@ class TimerNotifier extends StateNotifier<List<TimerModel>> {
       audioFocus: AndroidAudioFocus.gainTransientMayDuck,
     ),
     iOS: AudioContextIOS(
-      category: AVAudioSessionCategory.ambient,
+      category: AVAudioSessionCategory.playback,
       options: {AVAudioSessionOptions.mixWithOthers},
     ),
   );
@@ -126,22 +127,49 @@ class TimerNotifier extends StateNotifier<List<TimerModel>> {
       _alarmStopTimers[id]?.cancel();
       final player = AudioPlayer();
       _players[id] = player;
-      await player.setAudioContext(_duckAudioContext);
-      player.setReleaseMode(ReleaseMode.loop);
+      try {
+        await player.setAudioContext(_duckAudioContext);
+      } catch (e) {
+        debugPrint('[TIMER] setAudioContext failed: $e');
+      }
+      try {
+        await player.setReleaseMode(ReleaseMode.loop);
+      } catch (e) {
+        debugPrint('[TIMER] setReleaseMode failed: $e');
+      }
+      await player.setVolume(1.0);
       await player.play(AssetSource(soundFile));
+      debugPrint('[TIMER] play $soundFile state=${player.state}');
+      if (player.state != PlayerState.playing) {
+        debugPrint('[TIMER] retry play for $soundFile, state=${player.state}');
+        await Future.delayed(const Duration(milliseconds: 100));
+        await player.play(AssetSource(soundFile));
+      }
       _alarmStopTimers[id] = Timer(const Duration(seconds: 60), () {
         dismissAlarm(id);
       });
-    } catch (_) {}
+    } catch (e, st) {
+      debugPrint('[TIMER] _playAlarm failed for $soundFile: $e $st');
+    }
   }
 
-  void _playCloseSound() {
+  Future<void> _playCloseSound() async {
     try {
       final player = AudioPlayer();
-      player.setAudioContext(_duckAudioContext);
-      player.onPlayerComplete.first.then((_) => player.dispose());
-      player.play(AssetSource('audio/close-timer.mp3'));
-    } catch (_) {}
+      try {
+        await player.setAudioContext(_duckAudioContext);
+      } catch (_) {}
+      unawaited(player.onPlayerComplete.first.then((_) {
+        try {
+          player.dispose();
+        } catch (_) {}
+      }));
+      await player.setVolume(0.8);
+      await player.play(AssetSource('audio/close-timer.mp3'));
+      debugPrint('[TIMER] close sound played');
+    } catch (e, st) {
+      debugPrint('[TIMER] _playCloseSound failed: $e $st');
+    }
   }
 
   void dismissAlarm([String? id]) {

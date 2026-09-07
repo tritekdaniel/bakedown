@@ -39,13 +39,28 @@ class _SoundPreviewButtonState extends State<SoundPreviewButton> {
     super.dispose();
   }
 
-  void _toggle() {
+  Future<void> _toggle() async {
     if (_playing) {
-      _player.stop();
-      setState(() => _playing = false);
+      try {
+        await _player.stop();
+      } catch (e) {
+        debugPrint('[PREVIEW] stop failed: $e');
+      }
+      if (mounted) setState(() => _playing = false);
     } else {
-      _player.play(AssetSource(widget.soundFile));
-      setState(() => _playing = true);
+      try {
+        await _player.setVolume(1.0);
+        await _player.play(AssetSource(widget.soundFile));
+        debugPrint('[PREVIEW] play ${widget.soundFile} state=${_player.state}');
+        if (mounted) setState(() => _playing = true);
+      } catch (e, st) {
+        debugPrint('[PREVIEW] play failed: $e $st');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Preview failed: $e')),
+          );
+        }
+      }
     }
   }
 

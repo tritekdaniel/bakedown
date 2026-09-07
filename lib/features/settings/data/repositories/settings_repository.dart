@@ -24,6 +24,8 @@ class SettingsRepository {
       voiceRequireWakePrefix: prefs.getBool(AppConstants.settingsKeyVoiceRequireWake) ?? false,
       defaultTimerSound: prefs.getString(AppConstants.settingsKeyDefaultTimerSound) ?? 'audio/Helium.mp3',
       aiEnabled: prefs.getBool(AppConstants.settingsKeyAiEnabled) ?? true,
+      httpBridgeEnabled: prefs.getBool(AppConstants.settingsKeyHttpBridgeEnabled) ?? false,
+      httpBridgeUrl: prefs.getString(AppConstants.settingsKeyHttpBridgeUrl) ?? '',
     );
   }
 
@@ -40,10 +42,14 @@ class SettingsRepository {
     if (settings.selectedModel != null) {
       await prefs.setString(
           AppConstants.settingsKeySelectedModel, settings.selectedModel!);
+    } else {
+      await prefs.remove(AppConstants.settingsKeySelectedModel);
     }
     if (settings.lmPreset != null) {
       await prefs.setString(
           AppConstants.settingsKeyLmPreset, settings.lmPreset!);
+    } else {
+      await prefs.remove(AppConstants.settingsKeyLmPreset);
     }
     await prefs.setBool(
         AppConstants.settingsKeySmbEnabled, settings.smbEnabled);
@@ -67,10 +73,19 @@ class SettingsRepository {
         AppConstants.settingsKeyDefaultTimerSound, settings.defaultTimerSound);
     await prefs.setBool(
         AppConstants.settingsKeyAiEnabled, settings.aiEnabled);
+    await prefs.setBool(
+        AppConstants.settingsKeyHttpBridgeEnabled, settings.httpBridgeEnabled);
+    await prefs.setString(
+        AppConstants.settingsKeyHttpBridgeUrl, settings.httpBridgeUrl);
   }
 
   Future<void> saveDirectory(String path) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(AppConstants.settingsKeyDirectory, path);
+  }
+
+  Future<void> clearAll() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
   }
 }
