@@ -152,6 +152,10 @@ app.get('/files/:folder/:filename', (req, res) => {
   else if (ext === '.png') mime = 'image/png';
   else if (ext === '.webp') mime = 'image/webp';
   else if (ext === '.gif') mime = 'image/gif';
+  else if (ext === '.bmp') mime = 'image/bmp';
+  else if (ext === '.heic' || ext === '.heif') mime = 'image/heic';
+  else if (ext === '.avif') mime = 'image/avif';
+  else if (ext === '.svg') mime = 'image/svg+xml';
   else if (ext === '.md') mime = 'text/markdown; charset=utf-8';
   res.type(mime);
   res.sendFile(p);

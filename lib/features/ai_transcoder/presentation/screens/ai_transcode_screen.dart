@@ -149,9 +149,14 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
     final pf = result.files.single;
     final ext = pf.extension?.toLowerCase() ?? '';
 
-    final imageExtensions = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'];
+    final imageExtensions = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'heic', 'heif', 'avif', 'svg'];
     if (imageExtensions.contains(ext)) {
-      final xfile = pf.path != null && !kIsWeb ? XFile(pf.path!) : (pf.bytes != null ? XFile.fromData(pf.bytes!, name: pf.name, mimeType: 'image/$ext') : null);
+      final mime = ext == 'jpg' || ext == 'jpeg'
+          ? 'image/jpeg'
+          : ext == 'svg'
+              ? 'image/svg+xml'
+              : 'image/$ext';
+      final xfile = pf.path != null && !kIsWeb ? XFile(pf.path!) : (pf.bytes != null ? XFile.fromData(pf.bytes!, name: pf.name, mimeType: mime) : null);
       if (xfile != null) {
         setState(() {
           _images.add(xfile);
@@ -398,14 +403,16 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
     }
 
     final imagePaths = <String>[];
-    final slug = name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-').replaceAll(RegExp(r'^-|-$'), '');
+    var slug = name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-').replaceAll(RegExp(r'^-|-$'), '');
+    if (slug.isEmpty) slug = 'recipe';
+    int failedImages = 0;
     if (_attachImages && _images.isNotEmpty) {
       try {
         final rp = repo.rootPath;
         final isHttp = rp != null && (rp.startsWith('http://') || rp.startsWith('https://'));
         String extFor(String n) {
           final e = n.split('.').last.toLowerCase();
-          if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif', 'avif'].contains(e)) return e == 'jpeg' ? 'jpg' : e;
+          if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif', 'avif', 'svg'].contains(e)) return e == 'jpeg' ? 'jpg' : e;
           return 'jpg';
         }
 
@@ -415,6 +422,9 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
           if (e == 'webp') return 'image/webp';
           if (e == 'gif') return 'image/gif';
           if (e == 'bmp') return 'image/bmp';
+          if (e == 'heic' || e == 'heif') return 'image/heic';
+          if (e == 'avif') return 'image/avif';
+          if (e == 'svg') return 'image/svg+xml';
           return 'image/jpeg';
         }
 
@@ -425,10 +435,17 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
           final destName = '$slug-${i + 1}.$ext';
           try {
             final bytes = await sourceFile.readAsBytes();
-            if (bytes.isEmpty) continue;
+            if (bytes.isEmpty) {
+              failedImages++;
+              continue;
+            }
             if (isHttp && repo is HttpRecipeRepository) {
               final ok = await (repo as HttpRecipeRepository).writeBytes(folder, destName, bytes, contentType: mimeFor(srcName));
-              if (ok) imagePaths.add(destName);
+              if (ok) {
+                imagePaths.add(destName);
+              } else {
+                failedImages++;
+              }
             } else if (!isHttp && rp != null) {
               final folderDir = Directory(p.join(rp, folder));
               if (!folderDir.existsSync()) folderDir.createSync(recursive: true);
@@ -439,8 +456,11 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
                 await File(destPath).writeAsBytes(bytes);
               }
               imagePaths.add(destName);
+            } else {
+              failedImages++;
             }
           } catch (e) {
+            failedImages++;
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text('Failed to copy image ${i + 1}: $e')),
@@ -454,6 +474,11 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
             SnackBar(content: Text('Failed to prepare images: $e')),
           );
         }
+      }
+      if (failedImages > 0 && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$failedImages image(s) could not be attached — recipe saved without them')),
+        );
       }
     }
 
@@ -470,7 +495,12 @@ class _AITranscodeScreenState extends ConsumerState<AITranscodeScreen> {
         }
         if (closingIdx > 0) {
           final imagesLine = 'images: [${imagePaths.join(', ')}]';
-          lines.insert(closingIdx, imagesLine);
+          final existingIdx = lines.sublist(1, closingIdx).indexWhere((l) => l.trim().startsWith('images:'));
+          if (existingIdx >= 0) {
+            lines[1 + existingIdx] = imagesLine;
+          } else {
+            lines.insert(closingIdx, imagesLine);
+          }
           finalContent = lines.join('\n');
         }
       }

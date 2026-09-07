@@ -43,3 +43,9 @@ stderr.txt
 stdout.txt
 Standard/
 flutter_01.png
+
+# Node server (do not commit installed deps)
+server/node_modules/
+server/.env
+bridge/__pycache__/
+bridge/.venv/

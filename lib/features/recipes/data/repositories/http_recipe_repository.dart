@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -218,14 +217,7 @@ class HttpRecipeRepository implements RecipeRepository {
         data: bytes,
         options: Options(contentType: contentType, headers: {'Content-Type': contentType}),
       );
-      if (resp.statusCode == 200 || resp.statusCode == 201) return true;
-      final b64 = base64Encode(bytes);
-      final alt = await _dio.put(
-        '/api/file/${Uri.encodeComponent(folder)}/${Uri.encodeComponent(filename)}',
-        data: b64,
-        options: Options(contentType: 'text/plain'),
-      );
-      return alt.statusCode == 200 || alt.statusCode == 201;
+      return resp.statusCode == 200 || resp.statusCode == 201;
     } catch (e) {
       debugPrint('[HTTP_REPO] writeBytes $folder/$filename failed: $e');
       return false;

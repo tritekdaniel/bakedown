@@ -205,7 +205,7 @@ class SmbDiscoveryNotifier extends StateNotifier<SmbDiscoveryState> {
       }
       if (_disposed) return;
       if (kIsWeb) {
-        state = state.copyWith(isScanning: false, error: 'No bridge found. Configure HTTP Bridge URL (e.g. http://192.168.1.100:8787). On web, pick a folder directly via the OS picker — no SMB config needed.');
+        state = state.copyWith(isScanning: false, error: 'No bridge found. Web already uses the shared host folder (~/Recipes) via node server/index.js — check the server is running.');
       } else {
         state = state.copyWith(isScanning: false, error: 'No bridge found. On desktop/mobile, just pick a folder (local or \\server\\share) via the OS file picker — no SMB config needed.');
       }

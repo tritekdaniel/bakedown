@@ -366,8 +366,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             Card(
               child: ListTile(
                 leading: Icon(Icons.info_outline, color: theme.colorScheme.primary),
-                title: const Text('Network Share on Web'),
-                subtitle: const Text('Pick a local folder or \\\\server\\share via the OS picker (Chrome/Edge on localhost/HTTPS). Otherwise recipes use browser storage.'),
+                title: const Text('Shared Host Folder (Web)'),
+                subtitle: const Text('Web uses the shared host folder (~/Recipes) served by node server/index.js — all devices see the same recipes. Native apps still use Settings > Recipe Directory.'),
               ),
             )
           else
