@@ -56,10 +56,21 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
   Future<void> _pickDirectory() async {
     if (kIsWeb) {
       if (!isSecureContext) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Blocked: $currentOrigin is not secure. Use ${localhostAlternative} on this Ubuntu machine or serve with HTTPS (mkcert).')),
-        );
+        final count = await WebLegacyPicker.pickAndImportFolder();
+        if (count > 0) {
+          ref.read(webUseBrowserStorageProvider.notifier).state = true;
+          ref.invalidate(recipeRepositoryProvider);
+          ref.invalidate(foldersProvider);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Imported $count recipes into browser storage')),
+            );
+          }
+        } else if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No .md files selected — pick .md files with Import')),
+          );
+        }
         return;
       }
       // Always try OS picker first — isFileSystemAccessSupported can be wrong on some Linux Chrome builds
@@ -227,27 +238,20 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.security, size: 80, color: theme.colorScheme.error),
+                  Icon(Icons.folder_open, size: 80, color: theme.colorScheme.primary),
                   const SizedBox(height: 16),
-                  Text('Secure context required', style: theme.textTheme.headlineSmall),
+                  Text('Import recipes', style: theme.textTheme.headlineSmall),
                   const SizedBox(height: 8),
                   Text(
-                    'You are on $origin\nFile System Access needs https:// or http://localhost\n\nhttp://192.168.0.218:2211 is not secure, so the OS picker is blocked.',
+                    'You are on $origin\nOS folder picker needs https or http://localhost, so it is blocked on http://192.168.0.218:2211.\n\nUse Import below — it works on plain http (npx serve build/web -l 2211) via file_picker bytes.',
                     textAlign: TextAlign.center,
                     style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                   ),
-                  const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(color: theme.colorScheme.errorContainer, borderRadius: BorderRadius.circular(8)),
-                    child: Column(children: [
-                      Text('Fix on this Ubuntu machine:', style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w600, color: theme.colorScheme.onErrorContainer)),
-                      const SizedBox(height: 4),
-                      SelectableText('http://localhost:2211/', style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onErrorContainer, fontFamily: 'monospace')),
-                      const SizedBox(height: 4),
-                      Text('Open that on this PC. For LAN https:\nmkcert 192.168.0.218 localhost && npx http-server build/web -p 2211 --ssl --cert cert.pem --key key.pem',
-                          textAlign: TextAlign.center, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onErrorContainer)),
-                    ]),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Picks .md files as Uint8List (file.bytes, path is null on web) and saves to browser storage.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                   ),
                   const SizedBox(height: 16),
                   FilledButton.icon(
@@ -264,20 +268,33 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
                         }
                       } else if (context.mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('No .md files found or cancelled')),
+                          const SnackBar(content: Text('No .md files selected')),
                         );
                       }
                     },
-                    icon: const Icon(Icons.folder_open),
-                    label: const Text('Import Folder (legacy, http) — Read Only'),
+                    icon: const Icon(Icons.file_open),
+                    label: const Text('Import .md Files — Works on http'),
                   ),
                   const SizedBox(height: 8),
-                  FilledButton.tonalIcon(
-                    onPressed: () => context.push('/settings'),
-                    icon: const Icon(Icons.http),
-                    label: const Text('Configure HTTP Bridge (full R/W over http)'),
+                  Text(
+                    'Tip: npx serve build/web -l 2211 → open http://192.168.0.218:2211 on this PC or phone, then Import.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(color: theme.colorScheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(8)),
+                    child: Column(children: [
+                      Text('For real on-disk folder (optional):', style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 4),
+                      SelectableText('http://localhost:2211/', style: theme.textTheme.bodyMedium?.copyWith(fontFamily: 'monospace')),
+                      const SizedBox(height: 4),
+                      Text('Or: mkcert + npx http-server build/web -p 2211 --ssl --cert cert.pem --key key.pem → https://192.168.0.218:2211',
+                          textAlign: TextAlign.center, style: theme.textTheme.bodySmall),
+                    ]),
+                  ),
+                  const SizedBox(height: 12),
                   OutlinedButton.icon(
                     onPressed: () {
                       ref.read(webUseBrowserStorageProvider.notifier).state = true;
@@ -285,13 +302,7 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
                       ref.invalidate(foldersProvider);
                     },
                     icon: const Icon(Icons.storage),
-                    label: const Text('Use Browser Storage (virtual)'),
-                  ),
-                  const SizedBox(height: 8),
-                  TextButton.icon(
-                    onPressed: _pickDirectory,
-                    icon: const Icon(Icons.warning_amber),
-                    label: const Text('Try OS Picker Anyway (will fail)'),
+                    label: const Text('Use Browser Storage (empty)'),
                   ),
                 ],
               ),
