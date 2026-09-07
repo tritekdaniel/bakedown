@@ -1,6 +1,9 @@
-# Bakedown — Ubuntu Desktop (Web) Guide
+# Bakedown — Ubuntu Web (Shared Host) Guide
 
-Flutter already installed. This is the **web** target — runs in Chrome/Chromium on your Ubuntu desktop, with real folder access via Chrome's File System Access API (no SMB plugin needed).
+**Web = shared host folder. Native apps unchanged.**
+
+- **Web** (`flutter build web` → `node server/index.js`): every browser/device on `http://192.168.0.218:2211` reads/writes the **same** folder on this Ubuntu host (default `~/Recipes`, auto-created if missing). No per-browser `localStorage`, no `showDirectoryPicker`, works on plain `http` LAN.
+- **Native** (Android/iOS/Desktop `flutter run`): still uses `LocalRecipeRepository` / SAF `content://` as before (`Settings > Recipe Directory` picker).
 
 ---
 
@@ -12,109 +15,80 @@ cd recipe-app
 flutter pub get
 ```
 
-> Requires Flutter ≥3.44 (Dart ≥3.12). Check: `flutter --version`
+Requires Flutter ≥3.44.
 
-### 2. Run in Chrome (developer)
+### 2. Run web — shared host (recommended)
 
 ```bash
-flutter run -d chrome --no-wasm-dry-run
-# or pick a port:
-flutter run -d chrome --web-port 54545 --no-wasm-dry-run
-```
-
-* Must be **Chrome or Edge** (Firefox/Safari don't support `showDirectoryPicker`).
-* Must be `http://localhost:*` or `https://` (**secure context**). `flutter run -d chrome` already is `http://localhost:xxx` → picker works.
-* **You are on `http://192.168.0.218:2211` (npx) → NOT secure → picker blocked.** The app now shows `Secure context required` with `http://localhost:2211/` fix. On this Ubuntu machine, open **`http://localhost:2211/`** instead of `http://192.168.0.218:2211` — same server, but secure.
-* First screen → **Pick Folder on Disk — OS File Browser** → OS dialog → select `~/Recipes` or `//server/share` (see §4 for NAS). Grant **Read & Write**.
-* Files are real `.md` on disk at the folder you picked.
-
-**npx production:**
-```bash
+# Build once
 flutter build web --release --no-wasm-dry-run
-npx serve build/web -l 2211   # serves http://localhost:2211 + http://192.168.0.218:2211
-# → use http://localhost:2211 on this PC for picker
-# For LAN https (so other devices can pick):
-sudo apt install mkcert && mkcert -install && mkcert 192.168.0.218 localhost 127.0.0.1
-npx http-server build/web -p 2211 --ssl --cert cert.pem --key key.pem
-# → https://192.168.0.218:2211 now secure → picker works from phone
+
+# Install server deps once
+npm --prefix server install
+
+# Serve: app + recipes API on one port, plain http, CORS enabled
+node server/index.js --port 2211
+# → Recipes root: ~/Recipes (auto-created)
+# → http://localhost:2211      (on this PC)
+# → http://192.168.0.218:2211   (all phones/PCs on LAN — same recipes)
+
+# Custom dir / port:
+RECIPES_DIR=~/Desktop/bakedown-recipes node server/index.js --port 2211
+node server/index.js --dir /mnt/nas/recipes --port 2211 --host 0.0.0.0
 ```
 
-**Where is "root"?**
+**Test:** open `http://192.168.0.218:2211` on phone + PC → create folder `Desserts` on one → appears on the other instantly. `curl http://192.168.0.218:2211/api/folders` → `["Desserts"]`.
 
-| Mode | `RecipeRepository` | `rootPath` | Actual storage |
+Dev mode (hot reload, still shared):
+```bash
+flutter run -d chrome --web-port 2211 --no-wasm-dry-run
+# + in another terminal:
+node server/index.js --port 2211
+# App at http://localhost:2211 uses http://localhost:2211/api/* (same origin)
+```
+
+### 3. Where is the source of truth?
+
+| Target | `RecipeRepository` | `rootPath` | Storage |
 |---|---|---|---|
-| Web + picked folder | `WebFsRecipeRepository` (`lib/features/recipes/data/repositories/web_fs_recipe_repository.dart:5`) | `WebFsHelper.rootName` | Real OS folder you picked (`~/Recipes`, `/mnt/nas/recipes`, `//nas/share`) |
-| Web fallback (no FS API) | `WebRecipeRepository` (`lib/features/recipes/data/repositories/web_recipe_repository.dart:7`) | `web` | Browser `localStorage` (`DevTools > Application > Local Storage > http://localhost:XXXX` keys `web_recipe_*`) |
-| HTTP Bridge | `HttpRecipeRepository` | `http://host:8787` | Disk on bridge machine |
+| **Web** (this guide) | `HttpRecipeRepository(Uri.base.origin)` (`lib/features/recipes/presentation/providers/recipe_providers.dart:18`) | `http://192.168.0.218:2211` | Host disk `~/Recipes` via `server/index.js` (`GET /api/folders`, `PUT /api/file/:folder/:file`, etc.) |
+| **Native** | `LocalRecipeRepository(dir)` / `AndroidSafRecipeRepository` | Settings `recipeDirectory` | Device disk / SAF |
 
-Web handle is in-memory — reload → re-pick. (Persist to IndexedDB via handle storage is next step.)
+Web no longer uses `WebRecipeRepository` (`localStorage`) or `WebFsRecipeRepository` (`showDirectoryPicker`) — those remain in code but are gated off for `kIsWeb`. No `Secure context required`, no `mkcert`, no `Import .md Files` needed.
 
-### 3. Build for production (optimized)
+### 4. Network share (NAS) as host folder
 
-```bash
-# Release build (tree-shaken icons, canvaskit cached, PWA manifest)
-flutter build web --release --no-wasm-dry-run
-
-# Subpath deploy e.g. https://user.github.io/recipe-app/
-flutter build web --release --base-href /recipe-app/ --no-wasm-dry-run
-```
-
-Output: `build/web/` (55 MB total, 26 MB canvaskit, 12 MB assets — cached `31536000s` via `web/_headers:1`).
-
-* SPA fallback already: `web/_redirects:1` (`/* /index.html 200`), `firebase.json:5` rewrites, `vercel.json:4`.
-* `web/index.html:1` has SEO, splash (`#splash`), `flutter-first-frame` hide, theme `#E85D04`.
-* `web/manifest.json:1` PWA `standalone`, `background_color #FFF8F0`.
-
-Disable the `wasm` dry-run warnings for now — `sherpa_onnx:1.13.3` pulls `dart:ffi` (voice is stubbed on web via `lib/features/voice/sherpa_engine.dart:1` `if (dart.library.html)`). JS build is tree-shaken; wasm would need `--enable-experimental-ffi` and full stub.
-
-### 4. Network share (Samba) on web — no plugin
-
-**Just pick it:**
-
-1. Mount or ensure share visible in Nautilus: `Files > Other Locations > smb://nas.local/share` → Enter creds → **Remember forever**. Or `gio mount smb://nas.local/share` or `sudo mount -t cifs //nas/share /mnt/nas -o credentials=...`
-2. In Bakedown web: **Pick Folder on Disk** → file dialog → left sidebar **Network** or navigate to `/run/user/1000/gvfs/smb-share:server=nas.local,share=share` or `/mnt/nas`.
-3. That's it — `FileSystemDirectoryHandle.getDirectoryHandle` is OS SMB, not `smb_connect`.
-
-> No `Host/Share/User/Pass` fields anymore (removed `lib/features/settings/presentation/screens/settings_screen.dart:426`). Old prefs with `smb_enabled` are ignored; `recipe_providers.dart:19` now just uses `LocalRecipeRepository(dir)` for any `dir` (including `//server/share` or `/mnt/nas`).
-
-**If picker says “No bridge / denied”:**
-* Use Chrome/Edge, not Firefox.
-* Must be `localhost` or `https://` (not `http://192.168.x.x` without HTTPS) for `showDirectoryPicker`.
-* Ensure share is mounted/authenticated in OS first.
-
-### 5. HTTP Bridge (optional — headless/NAS)
-
-For a Pi/NAS that serves recipes over HTTP to all devices:
+Point the server at the mount, not the browser picker:
 
 ```bash
-python3 bridge/server.py --dir ~/Recipes --port 8787 --allow-cors
-# or: dart run bridge/server.dart
+gio mount smb://nas.local/share   # or: sudo mount -t cifs //nas/share /mnt/nas -o credentials=...
+node server/index.js --dir /mnt/nas/recipes --port 2211
+# or: --dir /run/user/1000/gvfs/smb-share:server=nas.local,share=share
 ```
 
-Then in Bakedown **Settings > HTTP Bridge** → `http://<bridge-host>:8787` → **Test Bridge**. `HttpRecipeRepository` takes priority over FS picker.
+All web clients then share the NAS via the host.
 
-Discovery (`lib/features/settings/presentation/providers/settings_providers.dart:180`) now only scans HTTP bridges.
+### 5. Production build
 
-### 6. Deploy the `build/web` folder
+```bash
+flutter build web --release --no-wasm-dry-run  # → build/web (PWA, _headers/_redirects already set)
+node server/index.js --port 2211               # single process serves build/web + /api
+```
 
-* **Netlify/Cloudflare Pages:** Drag `build/web` — `_headers`/`_redirects` auto-applied. Or `netlify deploy --prod --dir=build/web`.
-* **Vercel:** `vercel --prod` (reads `vercel.json` rewrites). Set Output `build/web`.
-* **Firebase:** `firebase deploy --only hosting` (uses `firebase.json` rewrites/headers).
-* **GitHub Pages:** `flutter build web --base-href /recipe-app/` → push `build/web` to `gh-pages`.
-* **Self-host Nginx:**
-  ```nginx
-  server { root /var/www/bakedown; try_files $uri $uri/ /index.html; }
-  ```
+For static hosting without shared semantics (Netlify/Vercel/Firebase) you lose shared host — use `node server/index.js` on a VM/VPS if you need LAN-share.
 
-### 7. Troubleshooting
+### 6. Troubleshooting
 
-* `SyntaxError: Identifier 'PromiseCompleter' has already been declared` → fixed via `wakelock_plus-1.5.2/lib/assets/no_sleep.js:3` guard + `settings_providers.dart:24` `if(kIsWeb) return` . If old service worker cached, **Ctrl+Shift+R** or `DevTools > Application > Clear storage`.
-* `FileSystemAccess not supported` / `Secure context required` on `http://192.168.0.218:2211` → **expected** — `http://192.168.x.x` is not secure, `showDirectoryPicker` is blocked. Use `http://localhost:2211` on this PC, or serve with `https://` (mkcert above). Check `DevTools > Console` for `[WEB_FS]` logs.
-* `Set folder just makes a folder` (text field) → you are in **Browser Storage** fallback (virtual `localStorage`), not OS picker. Click **Pick Folder on Disk — OS File Browser** on the `Secure context required` screen, or switch via `webUseBrowserStorageProvider`.
-* Empty after reload on web → handle is in-memory only — re-pick folder (IndexedDB persistence coming).
+- `build/web not found — API only` → run `flutter build web` first; `server/index.js` falls back to API-only if build missing.
+- `EACCES` / `EADDRINUSE` on `:2211` → `sudo lsof -i :2211` / pick another port: `node server/index.js --port 3000` → `http://192.168.0.218:3000`.
+- Native app still asks for folder → expected, native is unchanged; pick folder in `Settings > Recipe Directory`.
+- Want per-browser isolation on web again → change `recipe_providers.dart:18` back to `WebRecipeRepository` gating, but you lose cross-device sync.
 
-### 8. Next steps
+### 7. Verify
 
-* `flutter analyze` → 0 errors, `flutter test` → 20/20.
-* To make FS handle persist across reloads, store handle in IndexedDB (structured clone) — ask to enable.
-
+```bash
+flutter analyze  # 0 errors
+flutter test     # 20/20
+flutter build web
+curl http://localhost:2211/api/health  # {"ok":true,"root":".../Recipes"}
+```

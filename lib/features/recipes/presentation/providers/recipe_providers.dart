@@ -2,10 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/repositories/recipe_repository.dart';
 import '../../data/repositories/android_saf_recipe_repository.dart';
-import '../../data/repositories/web_recipe_repository.dart';
-import '../../data/repositories/web_fs_recipe_repository.dart';
 import '../../data/repositories/http_recipe_repository.dart';
-import 'package:recipe_app/shared/utils/web_fs_helper.dart';
 import '../../data/models/recipe_model.dart';
 import 'package:recipe_app/features/settings/presentation/providers/settings_providers.dart';
 import 'package:recipe_app/shared/utils/android_saf_helper.dart';
@@ -23,20 +20,16 @@ final recipeRepositoryProvider = FutureProvider<RecipeRepository?>((ref) async {
   final httpBridgeUrl = ref.watch(settingsProvider.select((s) => s.httpBridgeUrl));
   final recipeDirectory = ref.watch(settingsProvider.select((s) => s.recipeDirectory));
 
-  if (httpBridgeEnabled && httpBridgeUrl.isNotEmpty) {
-    return HttpRecipeRepository(httpBridgeUrl);
+  if (kIsWeb) {
+    final origin = Uri.base.origin;
+    if (origin.isNotEmpty && origin != 'null') {
+      return HttpRecipeRepository(origin);
+    }
+    return HttpRecipeRepository('http://localhost:2211');
   }
 
-  if (kIsWeb) {
-    final useBrowserStorage = ref.watch(webUseBrowserStorageProvider);
-    if (useBrowserStorage) return WebRecipeRepository();
-    if (WebFsHelper.hasHandle) {
-      return WebFsRecipeRepository();
-    }
-    if (isFileSystemAccessSupported) {
-      return null;
-    }
-    return WebRecipeRepository();
+  if (httpBridgeEnabled && httpBridgeUrl.isNotEmpty) {
+    return HttpRecipeRepository(httpBridgeUrl);
   }
 
   if (recipeDirectory.isEmpty) return null;

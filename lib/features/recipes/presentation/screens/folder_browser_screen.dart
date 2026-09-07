@@ -6,8 +6,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
 import '../../../../core/constants/app_constants.dart';
 import '../../../../shared/utils/android_saf_helper.dart';
-import '../../../../shared/utils/web_fs_helper.dart';
-import '../../../../shared/utils/web_legacy_picker.dart';
 import 'package:recipe_app/shared/widgets/file_browser.dart';
 import 'package:recipe_app/features/settings/domain/models/app_settings.dart';
 import 'package:recipe_app/features/settings/presentation/providers/settings_providers.dart';
@@ -55,52 +53,10 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
   }
   Future<void> _pickDirectory() async {
     if (kIsWeb) {
-      if (!isSecureContext) {
-        final count = await WebLegacyPicker.pickAndImportFolder();
-        if (count > 0) {
-          ref.read(webUseBrowserStorageProvider.notifier).state = true;
-          ref.invalidate(recipeRepositoryProvider);
-          ref.invalidate(foldersProvider);
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Imported $count recipes into browser storage')),
-            );
-          }
-        } else if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No .md files selected — pick .md files with Import')),
-          );
-        }
-        return;
-      }
-      // Always try OS picker first — isFileSystemAccessSupported can be wrong on some Linux Chrome builds
-      final handle = await WebFsHelper.pickDirectory();
-      if (handle != null) {
-        ref.read(webUseBrowserStorageProvider.notifier).state = false;
-        ref.read(webFsHandleRevisionProvider.notifier).state++;
-        ref.invalidate(recipeRepositoryProvider);
-        ref.invalidate(foldersProvider);
-        await ref.read(settingsProvider.notifier).updateDirectory(WebFsHelper.rootName ?? 'web-fs');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Using folder: ${WebFsHelper.rootName}')),
-          );
-        }
-        return;
-      }
-      if (isFileSystemAccessSupported) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No folder selected or browser denied access')),
-        );
-        return;
-      }
-      // Fallback for browsers without File System Access
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('File System Access not available — using browser storage. Try Chrome/Edge on localhost.')),
+        const SnackBar(content: Text('Web uses the shared host folder (~/Recipes) — create folders with + button')),
       );
-      _showManualPathDialog();
       return;
     }
 
@@ -222,141 +178,6 @@ class _FolderBrowserScreenState extends ConsumerState<FolderBrowserScreen> {
       return Scaffold(
         appBar: AppBar(title: const Text(AppConstants.appTitle)),
         body: const Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    if (kIsWeb && !WebFsHelper.hasHandle) {
-      final supported = isFileSystemAccessSupported;
-      final secure = isSecureContext;
-      final origin = currentOrigin;
-      if (!secure) {
-        return Scaffold(
-          appBar: AppBar(title: const Text(AppConstants.appTitle)),
-          body: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.folder_open, size: 80, color: theme.colorScheme.primary),
-                  const SizedBox(height: 16),
-                  Text('Import recipes', style: theme.textTheme.headlineSmall),
-                  const SizedBox(height: 8),
-                  Text(
-                    'You are on $origin\nOS folder picker needs https or http://localhost, so it is blocked on http://192.168.0.218:2211.\n\nUse Import below — it works on plain http (npx serve build/web -l 2211) via file_picker bytes.',
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Picks .md files as Uint8List (file.bytes, path is null on web) and saves to browser storage.',
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-                  ),
-                  const SizedBox(height: 16),
-                  FilledButton.icon(
-                    onPressed: () async {
-                      final count = await WebLegacyPicker.pickAndImportFolder();
-                      if (count > 0) {
-                        ref.read(webUseBrowserStorageProvider.notifier).state = true;
-                        ref.invalidate(recipeRepositoryProvider);
-                        ref.invalidate(foldersProvider);
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Imported $count recipes into browser storage')),
-                          );
-                        }
-                      } else if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('No .md files selected')),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.file_open),
-                    label: const Text('Import .md Files — Works on http'),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Tip: npx serve build/web -l 2211 → open http://192.168.0.218:2211 on this PC or phone, then Import.',
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-                  ),
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(color: theme.colorScheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(8)),
-                    child: Column(children: [
-                      Text('For real on-disk folder (optional):', style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 4),
-                      SelectableText('http://localhost:2211/', style: theme.textTheme.bodyMedium?.copyWith(fontFamily: 'monospace')),
-                      const SizedBox(height: 4),
-                      Text('Or: mkcert + npx http-server build/web -p 2211 --ssl --cert cert.pem --key key.pem → https://192.168.0.218:2211',
-                          textAlign: TextAlign.center, style: theme.textTheme.bodySmall),
-                    ]),
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      ref.read(webUseBrowserStorageProvider.notifier).state = true;
-                      ref.invalidate(recipeRepositoryProvider);
-                      ref.invalidate(foldersProvider);
-                    },
-                    icon: const Icon(Icons.storage),
-                    label: const Text('Use Browser Storage (empty)'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      }
-      return Scaffold(
-        appBar: AppBar(title: const Text(AppConstants.appTitle)),
-        body: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.folder_open, size: 80, color: theme.colorScheme.primary),
-              const SizedBox(height: 16),
-              Text(supported ? 'Choose a folder on disk' : 'Choose storage',
-                  style: theme.textTheme.headlineSmall),
-              const SizedBox(height: 8),
-              Text(
-                supported
-                    ? 'Pick a real folder via Chrome/Edge File System Access\n(files are stored on disk, not in browser storage)'
-                    : 'File System Access not available in this browser\n(need Chrome/Edge)',
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 24),
-              FilledButton.icon(
-                onPressed: _pickDirectory,
-                icon: const Icon(Icons.folder_open),
-                label: Text(supported ? 'Pick Folder on Disk — OS File Browser' : 'Try OS Picker Anyway'),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: () {
-                  ref.read(webUseBrowserStorageProvider.notifier).state = true;
-                  ref.invalidate(recipeRepositoryProvider);
-                  ref.invalidate(foldersProvider);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Using browser storage — folders are virtual (localStorage), not on disk. Create a folder below.')),
-                  );
-                },
-                icon: const Icon(Icons.storage),
-                label: const Text('Use Browser Storage Instead'),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Requires Chrome/Edge on localhost or HTTPS',
-                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-              ),
-            ],
-          ),
-        ),
       );
     }
 

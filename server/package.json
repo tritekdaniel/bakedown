@@ -1,0 +1,15 @@
+{
+  "name": "bakedown-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Serves Flutter web build + shared recipe folder over HTTP for LAN",
+  "scripts": {
+    "start": "node index.js",
+    "serve": "node index.js --port 2211"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  }
+}
